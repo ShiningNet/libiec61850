@@ -100,6 +100,20 @@ getCancelParameterCtlNum(MmsValue* operParameters)
 }
 
 static MmsValue*
+getCancelParameterCtlVal(MmsValue* operParameters)
+{
+    if (MmsValue_getType(operParameters) == MMS_STRUCTURE)
+    {
+        if (MmsValue_getArraySize(operParameters) >= 5)
+        {
+            return MmsValue_getElement(operParameters, 0);
+        }
+    }
+
+    return NULL;
+}
+
+static MmsValue*
 getCancelParameterOrigin(MmsValue* operParameters)
 {
     if (MmsValue_getType(operParameters) == MMS_STRUCTURE)
@@ -551,6 +565,40 @@ unselectObject(ControlObject* self, SelectStateChangedReason reason, MmsMapping*
         if (DEBUG_IED_SERVER)
             printf("IED_SERVER: control %s/%s.%s unselected\n", MmsDomain_getName(self->mmsDomain), self->lnName, self->name);
     }
+}
+
+static bool
+checkCancelTimeRange(ControlObject* self, MmsValue* t)
+{
+    uint64_t currentTime = 0;
+
+    Timestamp* timestamp = Timestamp_create();
+    if (!timestamp)
+    {
+        return true;
+    }
+
+    Timestamp_fromMmsValue(timestamp, t);
+    currentTime = (uint64_t)Timestamp_getTimeInMs(timestamp);
+    
+    if ((self->ctlModel == 2) || (self->ctlModel == 4))
+    {
+        if (getState(self) == STATE_READY)
+        {
+            if (self->selectTimeout > 0)
+            {
+                if ((currentTime > (self->selectTime + self->selectTimeout)) || 
+                    (currentTime < self->selectTime))
+                {
+                    return false;
+                }
+            }
+        }
+    }
+
+    Timestamp_destroy(timestamp);
+    timestamp = NULL;
+    return true;
 }
 
 static void
@@ -2499,7 +2547,11 @@ Control_writeAccessControlObject(MmsMapping* self, MmsDomain* domain, const char
         MmsValue* ctlNum = getCancelParameterCtlNum(value);
         MmsValue* origin = getCancelParameterOrigin(value);
 
-        if ((ctlNum == NULL) || (origin == NULL))
+        MmsValue* ctlVal = getCancelParameterCtlVal(value);
+        MmsValue* test = getCancelParameterTest(value);
+        MmsValue* t = getCancelParameterTime(value);
+
+        if ((ctlNum == NULL) || (origin == NULL) || (ctlVal == NULL) || (test == NULL) || (t == NULL))
         {
             indication = DATA_ACCESS_ERROR_OBJECT_ACCESS_DENIED;
             if (DEBUG_IED_SERVER)
@@ -2518,12 +2570,37 @@ Control_writeAccessControlObject(MmsMapping* self, MmsDomain* domain, const char
             goto free_and_return;
         }
 
+        if (!checkCancelTimeRange(controlObject, t)) {
+
+            indication = DATA_ACCESS_ERROR_TYPE_INCONSISTENT;
+                ControlObject_sendLastApplError(controlObject, connection, "Cancel",
+                    CONTROL_ERROR_NO_ERROR, ADD_CAUSE_INCONSISTENT_PARAMETERS,
+                    ctlNum, origin, true);
+
+                goto free_and_return;
+        }
+
         if ((controlObject->ctlModel == 2) || (controlObject->ctlModel == 4))
         {
             if (state != STATE_UNSELECTED)
             {
                 if (controlObject->mmsConnection == connection)
                 {
+                    //check Cancel parameters on equality with Select parameters
+                    bool testCondition = MmsValue_getBoolean(test);
+                    if ((MmsValue_equals(ctlVal, controlObject->ctlVal) &&
+                        MmsValue_equals(origin, controlObject->origin) && 
+                        MmsValue_equals(ctlNum, controlObject->ctlNum) &&
+                        controlObject->testMode == testCondition) == false)
+                        {
+                            indication = DATA_ACCESS_ERROR_TYPE_INCONSISTENT;
+                            ControlObject_sendLastApplError(controlObject, connection, "Cancel",
+                                CONTROL_ERROR_NO_ERROR, ADD_CAUSE_INCONSISTENT_PARAMETERS,
+                                ctlNum, origin, true);
+
+                            goto free_and_return;
+                        }
+
                     indication = DATA_ACCESS_ERROR_SUCCESS;
                     unselectObject(controlObject, SELECT_STATE_REASON_CANCELED, self);
                     goto free_and_return;
