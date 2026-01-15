@@ -46,6 +46,10 @@
 #define DEBUG_IED_SERVER 0
 #endif
 
+#ifndef DEBUG_RPT_BUFTM
+#define DEBUG_RPT_BUFTM 0
+#endif
+
 #if (CONFIG_IEC61850_REPORT_SERVICE == 1)
 
 #ifndef CONFIG_IEC61850_BRCB_WITH_RESVTMS
@@ -1161,6 +1165,11 @@ refreshBufferTime(ReportControl* rc)
 
     MmsValue* bufTm = ReportControl_getRCBValue(rc, "BufTm");
     rc->bufTm = MmsValue_toUint32(bufTm);
+
+#if (DEBUG_RPT_BUFTM == 1)
+    printf("RPT[%s] refreshBufferTime: BufTm=%u ms (RptEna=%d buffered=%d)\n",
+           rc->name, (unsigned) rc->bufTm, rc->enabled, rc->buffered);
+#endif
 
 #if (CONFIG_MMS_THREADLESS_STACK != 1)
     Semaphore_post(rc->rcbValuesLock);
@@ -2599,15 +2608,21 @@ Reporting_RCBWriteAccessHandler(MmsMapping* self, ReportControl* rc, const char*
                 rc->isResync = false;
             }
 
-#if (CONFIG_MMS_THREADLESS_STACK != 1)
-            Semaphore_wait(rc->rcbValuesLock);
-#endif
-            MmsValue* entryID = ReportControl_getRCBValue(rc, elementName);
-            MmsValue_update(entryID, value);
+            // il valore che arriva dal client non deve essere scritto tra gli RCBValues. 
+            // Se il client fa una GETRCBValues, con rptEna a false, deve ricevere
+            // l'entryId del newest. Un entryId pari a zero significa buffer vuoto
+            // un entryId diversa da zero non ha senso che sia scritta perchè
+            // verrebbe sovrascritta da un eventuale nuovo elemento in arrivo
+            
+// #if (CONFIG_MMS_THREADLESS_STACK != 1)
+//             Semaphore_wait(rc->rcbValuesLock);
+// #endif
+//             MmsValue* entryID = ReportControl_getRCBValue(rc, elementName);
+//             MmsValue_update(entryID, value);
 
-#if (CONFIG_MMS_THREADLESS_STACK != 1)
-            Semaphore_post(rc->rcbValuesLock);
-#endif
+// #if (CONFIG_MMS_THREADLESS_STACK != 1)
+//             Semaphore_post(rc->rcbValuesLock);
+// #endif
 
             goto exit_function;
         }
@@ -3157,6 +3172,12 @@ enqueueReport(ReportControl* reportControl, bool isIntegrity, bool isGI, uint64_
 
     updateTimeOfEntry(reportControl, Hal_getTimeInMs());
 
+#if (DEBUG_RPT_BUFTM == 1)
+    printf("RPT[%s] enqueueReport: now=%" PRIu64 " isIntegrity=%d isGI=%d flags(triggered was reset) bufCount=%d\n",
+           reportControl->name, Hal_getTimeInMs(), isIntegrity, isGI,
+           reportControl->reportBuffer->reportsCount);
+#endif
+
     int inclusionBitStringSize = MmsValue_getBitStringSize(reportControl->inclusionField);
 
     /* calculate size of complete buffer entry */
@@ -3569,6 +3590,11 @@ enqueueReport(ReportControl* reportControl, bool isIntegrity, bool isGI, uint64_
         }
     }
 
+#if (DEBUG_RPT_BUFTM == 1)
+    printf("RPT[%s] enqueueReport: includedBits=%d dataSetSize=%d\n",
+           reportControl->name, MmsValue_getBitStringSize(reportControl->inclusionField),
+           reportControl->dataSet ? reportControl->dataSet->elementCount : -1);
+#endif
     clearInclusionFlags(reportControl);
 
     if (DEBUG_IED_SERVER)
@@ -4362,6 +4388,13 @@ Reporting_activateBufferedReports(MmsMapping* self)
 static void
 processEventsForReport(ReportControl* rc, uint64_t currentTimeInMs)
 {
+// #if (DEBUG_RPT_BUFTM == 1)
+//     printf("RPT[%s] processEvents: now=%" PRIu64 " enabled=%d buffering=%d triggered=%d reportTime=%" PRIu64
+//            " bufTm=%u\n",
+//            rc->name, currentTimeInMs, rc->enabled, rc->isBuffering, rc->triggered,
+//            rc->reportTime, (unsigned)rc->bufTm);
+// #endif
+
     if ((rc->enabled) || (rc->isBuffering))
     {
         if (rc->triggerOps & TRG_OPT_GI)
@@ -4446,6 +4479,12 @@ processEventsForReport(ReportControl* rc, uint64_t currentTimeInMs)
         {
             if (currentTimeInMs >= rc->reportTime)
             {
+#if (DEBUG_RPT_BUFTM == 1)
+                printf("RPT[%s] triggered pending: now=%" PRIu64 " reportTime=%" PRIu64 " (%s)\n",
+                    rc->name, currentTimeInMs, rc->reportTime,
+                    (currentTimeInMs >= rc->reportTime) ? "SEND" : "WAIT");
+#endif
+
                 enqueueReport(rc, false, false, currentTimeInMs);
 
                 rc->triggered = false;
@@ -4568,8 +4607,22 @@ ReportControl_valueUpdated(ReportControl* self, int dataSetEntryIndex, int flag,
 {
     ReportControl_lockNotify(self);
 
+#if (DEBUG_RPT_BUFTM == 1)
+    uint64_t now = Hal_getTimeInMs();
+    printf("RPT[%s] valueUpdated idx=%d flag=0x%x now=%" PRIu64
+           " triggered=%d reportTime=%" PRIu64 " bufTm=%u inclusionFlags[idx]=0x%02x modelLocked=%d\n",
+           self->name, dataSetEntryIndex, flag, now,
+           self->triggered, self->reportTime, (unsigned)self->bufTm,
+           self->inclusionFlags ? self->inclusionFlags[dataSetEntryIndex] : 0,
+           modelLocked);
+#endif
+
     if (self->inclusionFlags[dataSetEntryIndex] & flag)
     {
+        #if (DEBUG_RPT_BUFTM == 1)
+            printf("RPT[%s] valueUpdated BYPASS BufTm: idx=%d already pending -> send immediately (now=%" PRIu64 ")\n",
+                self->name, dataSetEntryIndex, Hal_getTimeInMs());
+        #endif
         /* report for this data set entry is already pending (bypass BufTm and send report immediately) */
         self->reportTime = Hal_getTimeInMs();
 
@@ -4601,11 +4654,18 @@ ReportControl_valueUpdated(ReportControl* self, int dataSetEntryIndex, int flag,
         uint64_t currentTime = Hal_getTimeInMs();
 
         MmsValue_setBinaryTime(self->timeOfEntry, currentTime);
-
+        
         self->reportTime = currentTime + self->bufTm;
+        #if (DEBUG_RPT_BUFTM == 1)
+            printf("RPT[%s] ARM BufTm: now=%" PRIu64 " reportTime=now+bufTm => %" PRIu64 " (bufTm=%u)\n",
+                self->name, currentTime, self->reportTime, (unsigned)self->bufTm);
+        #endif
     }
 
     self->triggered = true;
+#if (DEBUG_RPT_BUFTM == 1)
+    printf("RPT[%s] triggered set TRUE (reportTime=%" PRIu64 ")\n", self->name, self->reportTime);
+#endif
 
     ReportControl_unlockNotify(self);
 }
