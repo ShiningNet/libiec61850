@@ -627,7 +627,7 @@ namespace IEC61850.SCL
 
                 foreach (DataAttribute subDataAttribute in dataAttribute.SubDataAttributes)
                 {
-                    ExportDataAttribute(output, subDataAttribute, isTransient);
+                    ExportDataAttribute(output, subDataAttribute, isTransient, dataAttribute.Definition.TriggerOptions);
                 }
 
                 output.WriteLine("}");
@@ -635,16 +635,17 @@ namespace IEC61850.SCL
 
         }
 
-        private void ExportDataAttribute(StreamWriter output, DataAttribute dataAttribute, bool isTransient)
+        private void ExportDataAttribute(StreamWriter output, DataAttribute dataAttribute, bool isTransient, SclTriggerOptions parentTriggerOptions = null)
         {
             output.Write("DA(" + dataAttribute.Name + " ");
             output.Write(dataAttribute.Count + " ");
             output.Write((int)dataAttribute.AttributeType + " ");
             output.Write((int)dataAttribute.Fc + " ");
 
-            if (dataAttribute.Definition.TriggerOptions != null)
+            var trgOpts = parentTriggerOptions ?? dataAttribute.Definition.TriggerOptions;
+            if (trgOpts != null)
             {
-                int trgOpsVal = dataAttribute.Definition.TriggerOptions.GetIntValue();
+                int trgOpsVal = trgOpts.GetIntValue();
 
                 if (isTransient)
                     trgOpsVal += 128;
@@ -753,6 +754,8 @@ namespace IEC61850.SCL
 
                 if (logicalDeviceName != null)
                     variableName = logicalDeviceName + "/" + variableName;
+
+                variableName = variableName?.Replace(".", "$");
 
                 if (variableName != null && arrayIndex != -1 && componentName != null)
                 {
