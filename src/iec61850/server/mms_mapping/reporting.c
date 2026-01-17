@@ -2045,6 +2045,17 @@ reserveRcb(ReportControl* rc, MmsServerConnection connection)
     updateOwner(rc, connection);
 }
 
+static bool
+rcbIsSameOwner(ReportControl* rc, MmsServerConnection conn)
+{
+    if (rc->clientConnection != NULL)
+        return (rc->clientConnection == conn);
+
+    /* hold case: compare by Owner */
+    const char* addr = MmsServerConnection_getClientAddress(conn);
+    return isIpAddressMatchingWithOwner(rc, addr);
+}
+
 MmsDataAccessError
 Reporting_RCBWriteAccessHandler(MmsMapping* self, ReportControl* rc, const char* elementName, MmsValue* value,
                                 MmsServerConnection connection)
@@ -2084,6 +2095,19 @@ Reporting_RCBWriteAccessHandler(MmsMapping* self, ReportControl* rc, const char*
     {
         checkReservationTimeout(self, rc);
 
+        if (rc->reserved) {
+            if (!rcbIsSameOwner(rc, connection)) {
+                retVal = DATA_ACCESS_ERROR_TEMPORARILY_UNAVAILABLE;
+                goto exit_function_only_tracking;
+            }
+
+            /* optional: if owner reconnects, bind active connection and refresh timer */
+            if (rc->clientConnection == NULL) {
+                rc->clientConnection = connection;
+                if (rc->resvTms > 0)
+                    rc->reservationTimeout = Hal_getTimeInMs() + (rc->resvTms * 1000);
+            }
+        }
         if (rc->resvTms == 0)
         {
             /* nothing to to */
@@ -2097,8 +2121,7 @@ Reporting_RCBWriteAccessHandler(MmsMapping* self, ReportControl* rc, const char*
 #if (CONFIG_IEC61850_RCB_ALLOW_ONLY_PRECONFIGURED_CLIENT == 1)
                     if (isIpAddressMatchingWithOwner(rc, MmsServerConnection_getClientAddress(connection)))
                     {
-                        rc->reserved = true;
-                        rc->clientConnection = connection;
+                        reserveRcb(rc, connection);
 
                         if (self->rcbEventHandler)
                         {
@@ -2112,8 +2135,7 @@ Reporting_RCBWriteAccessHandler(MmsMapping* self, ReportControl* rc, const char*
                             printf("IED_SERVER: client IP not matching with pre-assigned owner\n");
                     }
 #else
-                    rc->reserved = true;
-                    rc->clientConnection = connection;
+                    reserveRcb(rc, connection);
 
                     if (self->rcbEventHandler)
                     {
@@ -2130,8 +2152,7 @@ Reporting_RCBWriteAccessHandler(MmsMapping* self, ReportControl* rc, const char*
             {
                 if (isIpAddressMatchingWithOwner(rc, MmsServerConnection_getClientAddress(connection)))
                 {
-                    rc->reserved = true;
-                    rc->clientConnection = connection;
+                    reserveRcb(rc, connection);
                     rc->reservationTimeout = Hal_getTimeInMs() + (rc->resvTms * 1000);
 
                     if (self->rcbEventHandler)
@@ -2934,79 +2955,107 @@ exit_function_only_tracking:
 }
 
 static void
-Reporting_disableReportControlInstance(MmsMapping* self, ReportControl* rc)
+Reporting_releaseURCBOnDisconnect(MmsMapping* self, ReportControl* rc, MmsServerConnection oldConn)
 {
-    if (rc->enabled)
-    {
-        if (self->rcbEventHandler)
-        {
-            ClientConnection clientConnection =
-                private_IedServer_getClientConnectionByHandle(self->iedServer, rc->clientConnection);
-
-            self->rcbEventHandler(self->rcbEventHandlerParameter, rc->rcb, clientConnection, RCB_EVENT_DISABLE, NULL,
-                                  DATA_ACCESS_ERROR_SUCCESS);
-        }
+    /* notify disable if needed */
+    if (rc->enabled && self->rcbEventHandler) {
+        ClientConnection cc = private_IedServer_getClientConnectionByHandle(self->iedServer, oldConn);
+        self->rcbEventHandler(self->rcbEventHandlerParameter, rc->rcb, cc,
+                              RCB_EVENT_DISABLE, NULL, DATA_ACCESS_ERROR_SUCCESS);
     }
 
     rc->enabled = false;
-    rc->clientConnection = NULL;
 
 #if (CONFIG_MMS_THREADLESS_STACK != 1)
     Semaphore_wait(rc->rcbValuesLock);
 #endif
-
-    MmsValue* rptEna = ReportControl_getRCBValue(rc, "RptEna");
-    MmsValue_setBoolean(rptEna, false);
-
+    MmsValue_setBoolean(ReportControl_getRCBValue(rc, "RptEna"), false);
 #if (CONFIG_MMS_THREADLESS_STACK != 1)
     Semaphore_post(rc->rcbValuesLock);
 #endif
 
-    if (rc->reserved)
-    {
+    /* URCB: reservation is not kept post-disconnect */
+    if (rc->reserved) {
         rc->reserved = false;
 
-        if (self->rcbEventHandler)
-        {
-            ClientConnection clientConnection =
-                private_IedServer_getClientConnectionByHandle(self->iedServer, rc->clientConnection);
-
-            self->rcbEventHandler(self->rcbEventHandlerParameter, rc->rcb, clientConnection, RCB_EVENT_UNRESERVED, NULL,
-                                  DATA_ACCESS_ERROR_SUCCESS);
+        if (self->rcbEventHandler) {
+            ClientConnection cc = private_IedServer_getClientConnectionByHandle(self->iedServer, oldConn);
+            self->rcbEventHandler(self->rcbEventHandlerParameter, rc->rcb, cc,
+                                  RCB_EVENT_UNRESERVED, NULL, DATA_ACCESS_ERROR_SUCCESS);
         }
     }
 
-    if (rc->buffered == false)
-    {
-        if (rc->resvTms != -1)
-        {
+    rc->clientConnection = NULL;
+    rc->reservationTimeout = 0;
+
+    if (rc->resvTms != -1) {
 #if (CONFIG_MMS_THREADLESS_STACK != 1)
-            Semaphore_wait(rc->rcbValuesLock);
+        Semaphore_wait(rc->rcbValuesLock);
+#endif
+        MmsValue_setBoolean(ReportControl_getRCBValue(rc, "Resv"), false);
+#if (CONFIG_MMS_THREADLESS_STACK != 1)
+        Semaphore_post(rc->rcbValuesLock);
+#endif
+        updateOwner(rc, NULL);
+    }
+
+    purgeBuf(rc);
+}
+
+static void
+Reporting_releaseBRCBOnDisconnect(MmsMapping* self, ReportControl* rc, MmsServerConnection oldConn)
+{
+    if (rc->enabled && self->rcbEventHandler) {
+        ClientConnection cc = private_IedServer_getClientConnectionByHandle(self->iedServer, oldConn);
+        self->rcbEventHandler(self->rcbEventHandlerParameter, rc->rcb, cc,
+                              RCB_EVENT_DISABLE, NULL, DATA_ACCESS_ERROR_SUCCESS);
+    }
+
+    rc->enabled = false;
+
+#if (CONFIG_MMS_THREADLESS_STACK != 1)
+    Semaphore_wait(rc->rcbValuesLock);
+#endif
+    MmsValue_setBoolean(ReportControl_getRCBValue(rc, "RptEna"), false);
+#if (CONFIG_MMS_THREADLESS_STACK != 1)
+    Semaphore_post(rc->rcbValuesLock);
 #endif
 
-            MmsValue* resv = ReportControl_getRCBValue(rc, "Resv");
-            MmsValue_setBoolean(resv, false);
+    /* drop active connection (association lost) but NOT necessarily the reservation */
+    rc->clientConnection = NULL;
 
-#if (CONFIG_MMS_THREADLESS_STACK != 1)
-            Semaphore_post(rc->rcbValuesLock);
-#endif
+    if (rc->resvTms == 0) {
+        /* resvTms == 0: release immediately */
+        rc->reservationTimeout = 0;
+
+        if (rc->reserved) {
+            rc->reserved = false;
+
+            if (self->rcbEventHandler) {
+                ClientConnection cc = private_IedServer_getClientConnectionByHandle(self->iedServer, oldConn);
+                self->rcbEventHandler(self->rcbEventHandlerParameter, rc->rcb, cc,
+                                      RCB_EVENT_UNRESERVED, NULL, DATA_ACCESS_ERROR_SUCCESS);
+            }
         }
 
-        if (rc->resvTms != -1)
-            updateOwner(rc, NULL);
-
-        /* delete buffer content */
-        purgeBuf(rc);
+        updateOwner(rc, NULL);
     }
+    else if (rc->resvTms > 0) {
+        /* resvTms > 0: keep reservation for owner for ResvTms seconds */
+        rc->reservationTimeout = Hal_getTimeInMs() + (rc->resvTms * 1000);
+    }
+}
+
+
+static void
+Reporting_disableReportControlInstance(MmsMapping* self, ReportControl* rc)
+{
+    MmsServerConnection oldConn = rc->clientConnection;
+
+    if (rc->buffered)
+        Reporting_releaseBRCBOnDisconnect(self, rc, oldConn);
     else
-    {
-        if (rc->resvTms == 0)
-            updateOwner(rc, NULL);
-        else if (rc->resvTms > 0)
-        {
-            rc->reservationTimeout = Hal_getTimeInMs() + (rc->resvTms * 1000);
-        }
-    }
+        Reporting_releaseURCBOnDisconnect(self, rc, oldConn);
 
 #if (CONFIG_IEC61850_SERVICE_TRACKING == 1)
     copyRCBValuesToTrackingObject(self, rc);
