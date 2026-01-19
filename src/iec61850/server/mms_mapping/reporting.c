@@ -56,6 +56,84 @@
 #define CONFIG_IEC61850_BRCB_WITH_RESVTMS 0
 #endif
 
+#include "iso_server.h"   /* dove ci sono i getter */
+
+static void dumpIsoAddrs(const char* tag, MmsServerConnection mmsConn)
+{
+    IsoConnection iso = mmsConn->isoConnection;
+
+    char* peer  = IsoConnection_getPeerAddress(iso);
+    char* local = IsoConnection_getLocalAddress(iso);
+
+    printf("TXDBG[%s]: mmsConn=%p iso=%p peer=%s local=%s\n",
+           tag,
+           (void*)mmsConn,
+           (void*)iso,
+           peer ? peer : "<null>",
+           local ? local : "<null>");
+}
+
+static void
+dumpReportControl(const char* tag, ReportControl* rc)
+{
+    printf("\n================ RCB DUMP [%s] ================\n", tag);
+
+    printf("RCB name           : %s\n", rc->name);
+    printf("Buffered           : %d\n", rc->buffered);
+    printf("Enabled            : %d\n", rc->enabled);
+    printf("Reserved           : %d\n", rc->reserved);
+    printf("ResvTms            : %d\n", rc->resvTms);
+    printf("ReservationTimeout : %" PRIu64 "\n", rc->reservationTimeout);
+
+    printf("ClientConnection   : %p\n", (void*) rc->clientConnection);
+    printf("HasOwner           : %d\n", rc->hasOwner);
+
+    /* Owner MMS value */
+    MmsValue* owner = ReportControl_getRCBValue(rc, "Owner");
+    if (owner && MmsValue_getType(owner) == MMS_OCTET_STRING) {
+        int size = MmsValue_getOctetStringSize(owner);
+        printf("Owner MMS size     : %d\n", size);
+        if (size > 0) {
+            
+            printf("Owner MMS value    : %s\n", MmsValue_getOctetStringBuffer(owner));
+        }
+        else {
+            printf("Owner MMS value    : <empty>\n");
+        }
+    }
+    else {
+        printf("Owner MMS value    : <not present>\n");
+    }
+
+    /* RptEna MMS value */
+    MmsValue* rptEna = ReportControl_getRCBValue(rc, "RptEna");
+    if (rptEna)
+        printf("RptEna MMS         : %d\n", MmsValue_getBoolean(rptEna));
+    else
+        printf("RptEna MMS         : <not present>\n");
+
+    /* Buffer state */
+    if (rc->reportBuffer) {
+        printf("Buffer ptr         : %p\n", (void*) rc->reportBuffer);
+        printf("Buffer entries     : %d\n", rc->reportBuffer->reportsCount);
+        printf("OldestReport       : %p\n", (void*) rc->reportBuffer->oldestReport);
+        printf("LastEnqueuedReport : %p\n", (void*) rc->reportBuffer->lastEnqueuedReport);
+        printf("NextToTransmit     : %p\n", (void*) rc->reportBuffer->nextToTransmit);
+        
+    }
+    else {
+        printf("Buffer             : <NULL>\n");
+    }
+
+    /* Timing / trigger flags (se presenti) */
+    printf("GI                 : %d\n", rc->gi);
+    printf("IntegrityPeriod    : %d\n", rc->intgPd);
+    printf("BufferTime (BufTm) : %d\n", rc->bufTm);
+
+    printf("================================================\n\n");
+}
+
+
 static ReportBuffer*
 ReportBuffer_create(int bufferSize)
 {
@@ -2103,6 +2181,8 @@ Reporting_RCBWriteAccessHandler(MmsMapping* self, ReportControl* rc, const char*
 
             /* optional: if owner reconnects, bind active connection and refresh timer */
             if (rc->clientConnection == NULL) {
+                rc->isResync = false;
+
                 rc->clientConnection = connection;
                 if (rc->resvTms > 0)
                     rc->reservationTimeout = Hal_getTimeInMs() + (rc->resvTms * 1000);
@@ -2296,6 +2376,8 @@ Reporting_RCBWriteAccessHandler(MmsMapping* self, ReportControl* rc, const char*
                     self->rcbEventHandler(self->rcbEventHandlerParameter, rc->rcb, clientConnection, RCB_EVENT_ENABLE,
                                           NULL, DATA_ACCESS_ERROR_SUCCESS);
                 }
+
+                dumpReportControl("REPORT ENABLED", rc);
 
                 goto exit_function;
             }
@@ -4071,6 +4153,10 @@ sendNextReportEntrySegment(ReportControl* self)
     /* encode the report message */
 
     ReportControl_unlockNotify(self);
+if (DEBUG_RPT_BUFTM)
+    printf("SENDDBG: clientConn=%p isoConn=%p\n",
+       (void*) self->clientConnection,
+       (void*) self->clientConnection->isoConnection);
 
     IsoConnection_lock(self->clientConnection->isoConnection);
 
@@ -4289,7 +4375,13 @@ sendNextReportEntrySegment(ReportControl* self)
 
     reportBuffer->size = bufPos;
 
+    if (DEBUG_RPT_BUFTM)
+        dumpIsoAddrs("BEFORE_SEND", self->clientConnection);
     sentSuccess = MmsServerConnection_sendMessage(self->clientConnection, reportBuffer);
+    if (DEBUG_RPT_BUFTM) {
+        dumpIsoAddrs("AFTER_SEND", self->clientConnection);
+        printf("SENDDBG: sendMessage returned %d\n", sentSuccess);
+    }
 
     MmsServer_releaseTransmitBuffer(self->server->mmsServer);
 
