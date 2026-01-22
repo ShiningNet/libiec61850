@@ -741,6 +741,22 @@ createSecurityEvents(TLSConfiguration config, int ret, uint32_t flags, TLSSocket
     if (config->eventHandler == NULL)
         return;
 
+    if (ret == MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE && socket->ssl.trusted_ca_not_found) {
+        raiseSecurityEvent(config, TLS_SEC_EVT_INCIDENT,
+            TLS_EVENT_CODE_ALM_CERT_VALIDATION_FAILED, /* o meglio un tuo nuovo code */
+            "Alarm: CA certificate not found", socket);
+        return;
+    }
+
+    if (socket != NULL &&
+        socket->ssl.peer_cert_too_large)
+    {
+        raiseSecurityEvent(config, TLS_SEC_EVT_INCIDENT,
+            TLS_EVENT_CODE_ALM_CERT_SIZE_EXCEEDED,
+            "Alarm: TLS certificate size exceeded", socket);
+        return;
+    }
+
     switch (ret)
     {
     case MBEDTLS_ERR_X509_UNKNOWN_SIG_ALG:
