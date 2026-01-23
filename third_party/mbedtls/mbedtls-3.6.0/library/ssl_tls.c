@@ -7783,13 +7783,7 @@ static int ssl_parse_certificate_chain(mbedtls_ssl_context *ssl,
 
     /* Make &ssl->in_msg[i] point to the beginning of the CRT chain. */
     i += 3;
-    if (n > IEC62351_MAX_CERT_DER_SIZE) {
-        ssl->peer_cert_too_large = 1;
-        mbedtls_ssl_send_alert_message(ssl,
-                                    MBEDTLS_SSL_ALERT_LEVEL_FATAL,
-                                    MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR);
-        return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
-    }
+    
 
     /* Iterate through and parse the CRTs in the provided chain. */
     while (i < ssl->in_hslen) {
@@ -7814,7 +7808,14 @@ static int ssl_parse_certificate_chain(mbedtls_ssl_context *ssl,
         /* Read length of the next CRT in the chain. */
         n = MBEDTLS_GET_UINT16_BE(ssl->in_msg, i + 1);
         i += 3;
-
+        if (n > IEC62351_MAX_CERT_DER_SIZE) {
+            printf("il certificato è lungo %ld bytes\n", n);
+            ssl->peer_cert_too_large = 1;
+            mbedtls_ssl_send_alert_message(ssl,
+                                        MBEDTLS_SSL_ALERT_LEVEL_FATAL,
+                                        MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR);
+            return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
+        }
         if (n < 128 || i + n > ssl->in_hslen) {
             MBEDTLS_SSL_DEBUG_MSG(1, ("bad certificate message"));
             mbedtls_ssl_send_alert_message(ssl,

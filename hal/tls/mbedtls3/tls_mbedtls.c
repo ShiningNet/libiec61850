@@ -1056,6 +1056,9 @@ TLSSocket_create(Socket socket, TLSConfiguration configuration, bool storeClient
         {
             if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE)
             {
+                char errbuf[256];
+                mbedtls_strerror(ret, errbuf, sizeof(errbuf));
+                printf("mbedTLS ret=%d (%s)\n", ret, errbuf);
                 DEBUG_PRINT("TLS", "handshake failed - mbedtls_ssl_handshake returned -0x%x\n", -ret);
 
                 uint32_t flags = mbedtls_ssl_get_verify_result(&(self->ssl));

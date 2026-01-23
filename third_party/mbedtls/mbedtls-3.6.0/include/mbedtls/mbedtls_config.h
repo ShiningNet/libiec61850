@@ -1888,8 +1888,10 @@
  *
  * Comment this macro to disable support for DTLS
  */
-#define MBEDTLS_SSL_PROTO_DTLS
-
+/* DTLS disabled: IEC 62351 TLS over TCP only.
+ * Avoid renegotiation retransmission issues in mbedTLS 3.x (Duplicated Hello Request)*/
+//#define MBEDTLS_SSL_PROTO_DTLS
+#undef MBEDTLS_SSL_PROTO_DTLS
 /**
  * \def MBEDTLS_SSL_ALPN
  *
