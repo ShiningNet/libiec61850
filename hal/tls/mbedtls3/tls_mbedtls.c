@@ -213,7 +213,7 @@ verifyCertificate(void* parameter, mbedtls_x509_crt* crt, int certificate_depth,
                 *flags = *flags - MBEDTLS_X509_BADCRL_EXPIRED;
 
                 raiseSecurityEvent(self->tlsConfig, TLS_SEC_EVT_WARNING, TLS_EVENT_CODE_WRN_CRL_EXPIRED,
-                                   "Warning: certificate validation: using expired CRL", self);
+                                   "Warning: CRL expired", self);
             }
 
             if (*flags & MBEDTLS_X509_BADCERT_FUTURE)
