@@ -654,6 +654,14 @@ static int ssl_write_client_hello_body(mbedtls_ssl_context *ssl,
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_2)
     if (propose_tls12) {
+
+        /* IEC62351 / RFC6066 trusted_ca_keys (type 3) */
+        ret = ssl_write_trusted_ca_keys_ext(ssl, p, end, &output_len);
+        if (ret != 0) {
+            return ret;
+        }
+        p += output_len;
+        
         ret = mbedtls_ssl_tls12_write_client_hello_exts(ssl, p, end,
                                                         tls12_uses_ec,
                                                         &output_len);

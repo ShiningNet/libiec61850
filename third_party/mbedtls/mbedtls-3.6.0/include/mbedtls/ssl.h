@@ -1211,6 +1211,9 @@ mbedtls_dtls_srtp_info;
 
 #endif /* MBEDTLS_SSL_DTLS_SRTP */
 
+#define IEC_TRUSTED_CA_CN_MAX   8
+#define IEC_CN_MAXLEN          128
+
 /** Human-friendly representation of the (D)TLS protocol version. */
 typedef enum {
     MBEDTLS_SSL_VERSION_UNKNOWN, /*!< Context not in use or version not yet negotiated. */
@@ -1410,6 +1413,9 @@ typedef union {
  * SSL/TLS configuration to be shared between mbedtls_ssl_context structures.
  */
 struct mbedtls_ssl_config {
+    /* IEC62351 / RFC6066 trusted_ca_keys extension (type 3) */
+    const unsigned char *trusted_ca_keys_ext;
+    size_t trusted_ca_keys_ext_len;
     /* Group items mostly by size. This helps to reduce memory wasted to
      * padding. It also helps to keep smaller fields early in the structure,
      * so that elements tend to be in the 128-element direct access window
@@ -1688,8 +1694,8 @@ struct mbedtls_ssl_context {
 
     int trusted_ca_not_found; /* IEC62351: set when trusted_ca_keys doesn't match server chain */
     int peer_cert_too_large; /* IEC62351: peer sent a certificate > max supported size */
-
-
+    int trusted_ca_cn_count;
+    char trusted_ca_cn[IEC_TRUSTED_CA_CN_MAX][IEC_CN_MAXLEN];
 
     /*
      * Miscellaneous
@@ -2040,6 +2046,15 @@ void mbedtls_ssl_conf_endpoint(mbedtls_ssl_config *conf, int endpoint);
 static inline int mbedtls_ssl_conf_get_endpoint(const mbedtls_ssl_config *conf)
 {
     return conf->MBEDTLS_PRIVATE(endpoint);
+}
+
+static inline void mbedtls_ssl_conf_trusted_ca_keys_ext(mbedtls_ssl_config *conf,
+                                         const unsigned char *buf,
+                                         size_t len)
+{
+    if (conf == NULL) return;
+    conf->trusted_ca_keys_ext = buf;
+    conf->trusted_ca_keys_ext_len = len;
 }
 
 /**
@@ -5598,6 +5613,9 @@ int  mbedtls_ssl_tls_prf(const mbedtls_tls_prf_types prf,
                          const char *label,
                          const unsigned char *random, size_t rlen,
                          unsigned char *dstbuf, size_t dlen);
+
+int get_cn_from_x509_name(const mbedtls_x509_name* name,
+                                 char* out, size_t out_len);
 
 #ifdef __cplusplus
 }

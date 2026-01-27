@@ -270,6 +270,11 @@ TLSConfiguration_addCACertificate(TLSConfiguration self, uint8_t* certificate, i
 PAL_API bool
 TLSConfiguration_addCACertificateFromFile(TLSConfiguration self, const char* filename);
 
+PAL_API bool
+TLSConfiguration_addOwnIdentityFromFiles(TLSConfiguration self,
+                                        const char* certFile,
+                                        const char* keyFile,
+                                        const char* keyPassword /* nullable */);
 /**
  * \brief Set the renegotiation timeout.
  *
@@ -279,6 +284,15 @@ TLSConfiguration_addCACertificateFromFile(TLSConfiguration self, const char* fil
  */
 PAL_API void
 TLSConfiguration_setRenegotiationTime(TLSConfiguration self, int timeInMs);
+
+/**
+ * @brief Sets the trusted ca indication extension for ClientHello message
+ * 
+ * @param trustedCaPem the certificate will be used to get the issuer
+ * @return PAL_API 
+ */
+PAL_API bool 
+TLSConfiguration_setTrustedCaIndicationFromFile(TLSConfiguration self,  const char* filename);
 
 /**
  * \brief Set minimal allowed TLS version to use

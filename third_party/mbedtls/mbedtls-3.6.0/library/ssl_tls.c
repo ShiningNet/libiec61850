@@ -1053,7 +1053,9 @@ static int ssl_handshake_init(mbedtls_ssl_context *ssl)
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
 
     ssl->trusted_ca_not_found = 0;
+    ssl->trusted_ca_cn_count = 0;
     ssl->peer_cert_too_large = 0;
+    memset(ssl->trusted_ca_cn, 0, sizeof(ssl->trusted_ca_cn));
 
     /* Clear old handshake information if present */
 #if defined(MBEDTLS_SSL_PROTO_TLS1_2)
@@ -1572,8 +1574,11 @@ int mbedtls_ssl_session_reset_int(mbedtls_ssl_context *ssl, int partial)
 
     ssl->state = MBEDTLS_SSL_HELLO_REQUEST;
     ssl->tls_version = ssl->conf->max_tls_version;
+    
     ssl->trusted_ca_not_found = 0;
+    ssl->trusted_ca_cn_count = 0;
     ssl->peer_cert_too_large = 0;
+    memset(ssl->trusted_ca_cn, 0, sizeof(ssl->trusted_ca_cn));
 
     mbedtls_ssl_session_reset_msg_layer(ssl, partial);
 
@@ -9555,6 +9560,41 @@ int mbedtls_ssl_validate_ciphersuite(
 
     return 0;
 }
+
+#if defined(MBEDTLS_SSL_PROTO_TLS1_2)
+int ssl_write_trusted_ca_keys_ext( mbedtls_ssl_context *ssl,
+                                         unsigned char *buf,
+                                         const unsigned char *end,
+                                         size_t *olen )
+{
+    *olen = 0;
+
+    if( ssl == NULL || ssl->conf == NULL )
+        return 0;
+
+    if( ssl->conf->trusted_ca_keys_ext == NULL ||
+        ssl->conf->trusted_ca_keys_ext_len == 0 )
+        return 0;
+
+    const size_t ext_len = ssl->conf->trusted_ca_keys_ext_len;
+
+    /* ext header (type+len) + payload */
+    MBEDTLS_SSL_CHK_BUF_PTR( buf, end, 4 + ext_len );
+
+    /* Extension type: trusted_ca_keys (0x0003) */
+    buf[0] = 0x00;
+    buf[1] = 0x03;
+
+    /* Extension length */
+    buf[2] = (unsigned char) ( ( ext_len >> 8 ) & 0xFF );
+    buf[3] = (unsigned char) ( ( ext_len      ) & 0xFF );
+
+    memcpy( buf + 4, ssl->conf->trusted_ca_keys_ext, ext_len );
+
+    *olen = 4 + ext_len;
+    return 0;
+}
+#endif /* MBEDTLS_SSL_PROTO_TLS1_2 */
 
 #if defined(MBEDTLS_SSL_HANDSHAKE_WITH_CERT_ENABLED)
 /*

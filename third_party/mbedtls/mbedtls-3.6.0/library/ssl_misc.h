@@ -2215,6 +2215,12 @@ typedef enum {
 MBEDTLS_CHECK_RETURN_CRITICAL
 int mbedtls_ssl_write_sig_alg_ext(mbedtls_ssl_context *ssl, unsigned char *buf,
                                   const unsigned char *end, size_t *out_len);
+
+MBEDTLS_CHECK_RETURN_CRITICAL
+int ssl_write_trusted_ca_keys_ext( mbedtls_ssl_context *ssl,
+                                         unsigned char *buf,
+                                         const unsigned char *end,
+                                         size_t *olen );
 /*
  * Parse TLS Signature Algorithm extension
  */

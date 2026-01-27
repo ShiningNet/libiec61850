@@ -110,7 +110,7 @@ static int ssl_conf_has_psk_or_cb(mbedtls_ssl_config const *conf)
 #include "mbedtls/oid.h"
 #include "mbedtls/x509.h"
 
-static int get_cn_from_x509_name(const mbedtls_x509_name* name,
+int get_cn_from_x509_name(const mbedtls_x509_name* name,
                                  char* out, size_t out_len)
 {
     if (!out || out_len == 0) return -1;
@@ -207,64 +207,41 @@ static int extract_cn_from_x509_name_der(const unsigned char* der, size_t der_le
 }
 
 /* Parse RFC6066 trusted_ca_keys and enforce IEC62351 policy:
- * if no match with server cert issuer (or ServerRootCA1), abort handshake.
+ * - If we have multiple server certs, select the one whose issuer CN matches
+ *   one of the Trusted CA x509_name entries.
+ * - If no match, abort handshake.
  */
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_parse_trusted_ca_keys(mbedtls_ssl_context* ssl,
                                      const unsigned char* p,
                                      size_t len)
 {
-    /* trusted_ca_keys payload: TrustedAuthorities<0..2^16-1> */
+    if (ssl == NULL)
+        return 0;
+
+    ssl->trusted_ca_cn_count = 0;
+    memset(ssl->trusted_ca_cn, 0, sizeof(ssl->trusted_ca_cn));
+
     if (len < 2)
-        return 0; /* ignore malformed */
+        return 0;
 
     size_t list_len = ((size_t)p[0] << 8) | p[1];
     p += 2;
     len -= 2;
 
     if (list_len > len)
-        return 0; /* ignore malformed */
+        return 0;
 
     const unsigned char* end = p + list_len;
 
-    char expected_cn[128];
+    while (p < end && ssl->trusted_ca_cn_count < IEC_TRUSTED_CA_CN_MAX) {
 
-    if (ssl == NULL || ssl->conf == NULL || ssl->conf->key_cert == NULL ||
-        ssl->conf->key_cert->cert == NULL) {
-        return 0; /* nothing to enforce */
-    }
-
-    /* expected CN = CN of issuer DN of the server leaf certificate */
-    if (get_cn_from_x509_name(&ssl->conf->key_cert->cert->issuer,
-                            expected_cn, sizeof(expected_cn)) != 0) {
-        /* If issuer CN can't be extracted, decide policy:
-        - for certification I'd FAIL (can't comply), or
-        - ignore extension.
-        I suggest fail to be strict. */
-        ssl->trusted_ca_not_found = 1;
-        mbedtls_ssl_send_alert_message(ssl, MBEDTLS_SSL_ALERT_LEVEL_FATAL,
-                                    MBEDTLS_SSL_ALERT_MSG_HANDSHAKE_FAILURE);
-        return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
-    }
-
-    if (ssl == NULL || ssl->conf == NULL || ssl->conf->key_cert == NULL ||
-        ssl->conf->key_cert->cert == NULL) {
-        /* No server cert configured => nothing to enforce */
-        return 0;
-    }
-
-    int match = 0;
-
-    while (p < end) {
-
-        /* Need at least identifier_type */
         if ((size_t)(end - p) < 1)
             break;
 
         unsigned char id_type = *p++;
 
         if (id_type == 0x02) { /* x509_name */
-
             if ((size_t)(end - p) < 2)
                 break;
 
@@ -274,40 +251,25 @@ static int ssl_parse_trusted_ca_keys(mbedtls_ssl_context* ssl,
             if (name_len == 0 || name_len > (size_t)(end - p))
                 break;
 
-            char client_cn[128];
-            if (extract_cn_from_x509_name_der(p, name_len,
-                                              client_cn, sizeof(client_cn)) == 0) {
-                
-                if (strcmp(client_cn, expected_cn) == 0)
-                    match = 1;
+            char cn[IEC_CN_MAXLEN];
+            if (extract_cn_from_x509_name_der(p, name_len, cn, sizeof(cn)) == 0) {
+                /* salva CN */
+                strncpy(ssl->trusted_ca_cn[ssl->trusted_ca_cn_count], cn, IEC_CN_MAXLEN - 1);
+                ssl->trusted_ca_cn[ssl->trusted_ca_cn_count][IEC_CN_MAXLEN - 1] = '\0';
+                ssl->trusted_ca_cn_count++;
             }
 
             p += name_len;
         }
         else {
-            /* Not implemented: pre_agreed(0), key_sha1_hash(1), cert_sha1_hash(3) */
-            /* Best effort: stop parsing (treat as no match) */
+            /* altri identifier_type non gestiti: stop */
             break;
         }
-
-        if (match)
-            break;
     }
 
-    if (!match) {
-        /* Signal HAL to raise IEC event */
-        ssl->trusted_ca_not_found = 1;
-
-        /* Send TLS alert and abort handshake */
-        mbedtls_ssl_send_alert_message(ssl, MBEDTLS_SSL_ALERT_LEVEL_FATAL,
-                                       MBEDTLS_SSL_ALERT_MSG_HANDSHAKE_FAILURE);
-        return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
-    }
 
     return 0;
 }
-
-
 
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_parse_renegotiation_info(mbedtls_ssl_context *ssl,

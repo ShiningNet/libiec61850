@@ -16,13 +16,15 @@
 #include "lib_memory.h"
 #include "linked_list.h"
 #include "tls_socket.h"
+#include <stdint.h>
+#include <stdio.h>
 
 #include "mbedtls/ctr_drbg.h"
-#include "mbedtls/entropy.h"
-#include "mbedtls/platform.h"
 #include "mbedtls/debug.h"
+#include "mbedtls/entropy.h"
 #include "mbedtls/error.h"
 #include "mbedtls/net_sockets.h"
+#include "mbedtls/platform.h"
 #include "mbedtls/ssl.h"
 #include "mbedtls/ssl_cache.h"
 #include "mbedtls/x509.h"
@@ -45,6 +47,13 @@
 #endif
 
 static int psaInitCounter = 0;
+
+typedef struct sTLSOwnIdentity
+{
+    mbedtls_x509_crt cert;
+    mbedtls_pk_context key;
+    struct sTLSOwnIdentity* next;
+} TLSOwnIdentity;
 
 struct sTLSConfiguration
 {
@@ -94,6 +103,12 @@ struct sTLSConfiguration
 
     int* ciphersuites;
     int maxCiphersuites;
+
+    TLSOwnIdentity* own_identities; /* lista di server cert/key */
+    TLSOwnIdentity* own_identities_tail;
+
+    uint8_t* trustedCaKeysExt;
+	size_t trustedCaKeysExtLen;
 };
 
 struct sTLSSocket
@@ -112,6 +127,156 @@ struct sTLSSocket
     /* time of the last CRL update */
     uint64_t crlUpdated;
 };
+
+
+
+static void free_trusted_ca_ext(TLSConfiguration self)
+{
+    if (self->trustedCaKeysExt) {
+        GLOBAL_FREEMEM(self->trustedCaKeysExt);
+        self->trustedCaKeysExt = NULL;
+        self->trustedCaKeysExtLen = 0;
+    }
+}
+
+static int append_bytes(uint8_t* dst, size_t cap, size_t* off, const uint8_t* src, size_t n)
+{
+    if (*off + n > cap) return -1;
+    memcpy(dst + *off, src, n);
+    *off += n;
+    return 0;
+}
+
+static int append_u8(uint8_t* dst, size_t cap, size_t* off, uint8_t v)
+{
+    if (*off + 1 > cap) return -1;
+    dst[(*off)++] = v;
+    return 0;
+}
+
+static int append_u16be(uint8_t* dst, size_t cap, size_t* off, uint16_t v)
+{
+    if (*off + 2 > cap) return -1;
+    dst[(*off)++] = (uint8_t)((v >> 8) & 0xFF);
+    dst[(*off)++] = (uint8_t)(v & 0xFF);
+    return 0;
+}
+
+bool TLSConfiguration_setTrustedCaIndicationFromFile(TLSConfiguration self, const char* filename)
+{
+    if (!self || !filename) return false;
+
+    mbedtls_x509_crt chain;
+    mbedtls_x509_crt_init(&chain);
+
+    int ret = mbedtls_x509_crt_parse_file(&chain, filename);
+    if (ret != 0) {
+        mbedtls_x509_crt_free(&chain);
+        return false;
+    }
+
+    /*
+     * Calcolo dimensione necessaria:
+     * 2 bytes list_len + somma di (1 + 2 + name_len) per ogni CA.
+     */
+    size_t list_len = 0;
+    int ca_count = 0;
+
+    for (mbedtls_x509_crt* c = &chain; c != NULL; c = c->next) {
+        if (c->raw.p == NULL || c->raw.len == 0)
+            continue;
+
+        /* Qui il punto fondamentale: usare il subject DER già presente */
+#if defined(MBEDTLS_X509_REMOVE_INFO) 
+        /* se hai build strane, potresti non avere subject_raw */
+#endif
+
+        if (c->subject_raw.p == NULL || c->subject_raw.len == 0)
+            continue;
+
+        size_t one = 1 + 2 + c->subject_raw.len;
+        if (list_len + one > 65535) {
+            /* per sicurezza tronchiamo: max estensione */
+            break;
+        }
+
+        list_len += one;
+        ca_count++;
+    }
+
+    if (ca_count == 0) {
+        mbedtls_x509_crt_free(&chain);
+        return false;
+    }
+
+    size_t total = 2 + list_len;
+
+    /* rimpiazza eventuale vecchia estensione */
+    free_trusted_ca_ext(self);
+
+    uint8_t* buf = (uint8_t*) GLOBAL_CALLOC(1, total);
+    if (!buf) {
+        mbedtls_x509_crt_free(&chain);
+        return false;
+    }
+
+    size_t off = 0;
+
+    /* list_len (2 bytes) */
+    if (append_u16be(buf, total, &off, (uint16_t)list_len) != 0) goto fail;
+
+    /* entries */
+    for (mbedtls_x509_crt* c = &chain; c != NULL; c = c->next) {
+
+        if (c->subject_raw.p == NULL || c->subject_raw.len == 0)
+            continue;
+
+        size_t name_len = c->subject_raw.len;
+        if (name_len > 65535) continue;
+
+        /* identifier_type = x509_name (0x02) */
+        if (append_u8(buf, total, &off, 0x02) != 0) goto fail;
+
+        /* name_len */
+        if (append_u16be(buf, total, &off, (uint16_t)name_len) != 0) goto fail;
+
+        /* name_der */
+        if (append_bytes(buf, total, &off, c->subject_raw.p, name_len) != 0) goto fail;
+
+        /* stop quando raggiungi list_len */
+        if (off >= total) break;
+    }
+
+    /* sanity */
+    if (off != total) goto fail;
+
+    self->trustedCaKeysExt = buf;
+    self->trustedCaKeysExtLen = total;
+
+    mbedtls_x509_crt_free(&chain);
+    return true;
+
+fail:
+    GLOBAL_FREEMEM(buf);
+    mbedtls_x509_crt_free(&chain);
+    return false;
+}
+
+static void
+TLSConfiguration_freeOwnIdentities(TLSConfiguration self)
+{
+    TLSOwnIdentity* it = self->own_identities;
+    while (it)
+    {
+        TLSOwnIdentity* nxt = it->next;
+        mbedtls_pk_free(&it->key);
+        mbedtls_x509_crt_free(&it->cert);
+        GLOBAL_FREEMEM(it);
+        it = nxt;
+    }
+    self->own_identities = NULL;
+    self->own_identities_tail = NULL;
+}
 
 static void
 raiseSecurityEvent(TLSConfiguration config, TLSEventLevel eventCategory, int eventCode, const char* message,
@@ -133,6 +298,65 @@ compareCertificates(mbedtls_x509_crt* crt1, mbedtls_x509_crt* crt2)
     }
 
     return false;
+}
+
+static int iec_issuer_cn_matches(const mbedtls_x509_crt* crt,
+                                 const char trusted_ca_cn[][128],
+                                 int trusted_ca_cn_count)
+{
+    // Match “semplice”: CN issuer del cert server ∈ lista CN ricevuti dal client
+    char issuer_cn[128];
+    if (get_cn_from_x509_name(&crt->issuer, issuer_cn, sizeof(issuer_cn)) != 0)
+        return 0;
+
+    for (int i = 0; i < trusted_ca_cn_count; ++i) {
+        if (strcmp(issuer_cn, trusted_ca_cn[i]) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+static int iec_server_cert_cb(mbedtls_ssl_context* ssl)
+{
+#if !defined(MBEDTLS_X509_CRT_PARSE_C)
+    return 0;
+#else
+    if (ssl == NULL) return 0;
+
+    TLSSocket sock = (TLSSocket) mbedtls_ssl_get_user_data_p(ssl);
+    if (!sock || !sock->tlsConfig) return 0;
+
+    TLSConfiguration cfg = sock->tlsConfig;
+
+    // Se non hai dati dalla trusted-ca extension, non forzare selezione
+    if (ssl->trusted_ca_cn_count <= 0)
+        return 0;
+
+    TLSOwnIdentity* id = cfg->own_identities;
+    bool found = false;
+    while (id) {
+
+        if (iec_issuer_cn_matches(&id->cert,
+                                  ssl->trusted_ca_cn,
+                                  ssl->trusted_ca_cn_count))
+        {
+            // aggiungi questa identity come valida per questo handshake
+            mbedtls_ssl_set_hs_own_cert(ssl, &id->cert, &id->key);
+            found = true;
+        }
+
+        id = id->next;
+    }
+    if (!found) {
+    // Nessun match: policy IEC -> fail
+        ssl->trusted_ca_not_found = 1;
+        mbedtls_ssl_send_alert_message(ssl, MBEDTLS_SSL_ALERT_LEVEL_FATAL,
+                                    MBEDTLS_SSL_ALERT_MSG_HANDSHAKE_FAILURE);
+        return MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
+    }
+    return 0;
+    
+#endif
 }
 
 static int
@@ -262,10 +486,9 @@ TLSConfiguration_setupComplete(TLSConfiguration self)
     {
         mbedtls_ssl_conf_ca_chain(&(self->conf), &(self->cacerts), &(self->crl));
 
-        if (self->ownCertificate.version > 0)
+        for (TLSOwnIdentity* id = self->own_identities; id; id = id->next)
         {
-            int ret = mbedtls_ssl_conf_own_cert(&(self->conf), &(self->ownCertificate), &(self->ownKey));
-
+            int ret = mbedtls_ssl_conf_own_cert(&(self->conf), &id->cert, &id->key);
             if (ret != 0)
             {
                 DEBUG_PRINT("TLS", "mbedtls_ssl_conf_own_cert returned -0x%x\n", -ret);
@@ -291,6 +514,15 @@ TLSConfiguration_setupComplete(TLSConfiguration self)
 
         mbedtls_ssl_conf_ciphersuites(&(self->conf), self->ciphersuites);
 
+        mbedtls_ssl_conf_cert_cb(&(self->conf), iec_server_cert_cb);
+
+        if (mbedtls_ssl_conf_get_endpoint(&(self->conf)) == MBEDTLS_SSL_IS_CLIENT) {
+            if (self->trustedCaKeysExt && self->trustedCaKeysExtLen > 0) {
+                mbedtls_ssl_conf_trusted_ca_keys_ext(&(self->conf),
+                                                    self->trustedCaKeysExt,
+                                                    self->trustedCaKeysExtLen);
+            }
+        }
         self->setupComplete = true;
     }
 
@@ -449,6 +681,12 @@ TLSConfiguration_create()
             self->ciphersuites[cipherIndex++] =
                 MBEDTLS_TLS1_3_AES_128_CCM_8_SHA256; /* optional according IEC 62351-3:2023 */
         }
+
+        self->own_identities = NULL;
+        self->own_identities_tail = NULL;
+
+        self->trustedCaKeysExt = NULL;
+	    self->trustedCaKeysExtLen = 0;
     }
 
     return self;
@@ -613,10 +851,77 @@ TLSConfiguration_addCACertificateFromFile(TLSConfiguration self, const char* fil
 {
     int ret = mbedtls_x509_crt_parse_file(&(self->cacerts), filename);
 
-    if (ret != 0)
+    if (ret != 0)    
         DEBUG_PRINT("TLS", "mbedtls_x509_crt_parse returned -0x%x\n", -ret);
 
     return (ret == 0);
+}
+
+bool
+TLSConfiguration_addOwnIdentityFromFiles(TLSConfiguration self, const char* certFile, const char* keyFile,
+                                         const char* keyPassword /* nullable */)
+{
+    if (!self || !certFile || !keyFile)
+        return false;
+
+    // Non permettere modifiche “a caldo” dopo setupComplete (semplice e sicuro)
+    if (self->setupComplete)
+    {
+        DEBUG_PRINT("TLS", "addOwnIdentityFromFiles called after setupComplete\n");
+        return false;
+    }
+
+    TLSOwnIdentity* node = (TLSOwnIdentity*)GLOBAL_CALLOC(1, sizeof(TLSOwnIdentity));
+    if (!node)
+        return false;
+
+    mbedtls_x509_crt_init(&node->cert);
+    mbedtls_pk_init(&node->key);
+    node->next = NULL;
+
+    int ret = 0;
+
+    // 1) parse certificate (PEM/DER auto)
+    ret = mbedtls_x509_crt_parse_file(&node->cert, certFile);
+    if (ret != 0)
+    {
+        DEBUG_PRINT("TLS", "mbedtls_x509_crt_parse_file(%s) returned -0x%x\n", certFile, -ret);
+        goto fail;
+    }
+
+    // 2) parse private key (PEM/DER auto)
+#if defined(MBEDTLS_PK_PARSE_C)
+    ret = mbedtls_pk_parse_keyfile(&node->key, keyFile, keyPassword, mbedtls_ctr_drbg_random, &(self->ctr_drbg));
+    if (ret != 0)
+    {
+        DEBUG_PRINT("TLS", "mbedtls_pk_parse_keyfile(%s) returned -0x%x\n", keyFile, -ret);
+        goto fail;
+    }
+#else
+    (void)keyPassword;
+    DEBUG_PRINT("TLS", "MBEDTLS_PK_PARSE_C not enabled, cannot parse key file\n");
+    goto fail;
+#endif
+
+    // 3) append to list
+    if (!self->own_identities)
+    {
+        self->own_identities = node;
+        self->own_identities_tail = node;
+    }
+    else
+    {
+        self->own_identities_tail->next = node;
+        self->own_identities_tail = node;
+    }
+
+    return true;
+
+fail:
+    mbedtls_pk_free(&node->key);
+    mbedtls_x509_crt_free(&node->cert);
+    GLOBAL_FREEMEM(node);
+    return false;
 }
 
 static void
@@ -702,6 +1007,13 @@ TLSConfiguration_destroy(TLSConfiguration self)
                 mbedtls_ssl_cache_free(&(self->cache));
             }
         }
+        TLSConfiguration_freeOwnIdentities(self);
+
+        if (self->trustedCaKeysExt != NULL) {
+            GLOBAL_FREEMEM(self->trustedCaKeysExt);
+            self->trustedCaKeysExt = NULL;
+            self->trustedCaKeysExtLen = 0;
+        }
 
         mbedtls_x509_crt_free(&(self->ownCertificate));
         mbedtls_x509_crt_free(&(self->cacerts));
@@ -748,12 +1060,10 @@ createSecurityEvents(TLSConfiguration config, int ret, uint32_t flags, TLSSocket
         return;
     }
 
-    if (socket != NULL &&
-        socket->ssl.peer_cert_too_large)
+    if (socket != NULL && socket->ssl.peer_cert_too_large)
     {
-        raiseSecurityEvent(config, TLS_SEC_EVT_INCIDENT,
-            TLS_EVENT_CODE_ALM_CERT_SIZE_EXCEEDED,
-            "Alarm: TLS certificate size exceeded", socket);
+        raiseSecurityEvent(config, TLS_SEC_EVT_INCIDENT, TLS_EVENT_CODE_ALM_CERT_SIZE_EXCEEDED,
+                           "Alarm: TLS certificate size exceeded", socket);
         return;
     }
 
@@ -1022,6 +1332,9 @@ TLSSocket_create(Socket socket, TLSConfiguration configuration, bool storeClient
         mbedtls_ssl_set_bio(&(self->ssl), socket, (mbedtls_ssl_send_t*)writeFunction, (mbedtls_ssl_recv_t*)readFunction,
                             NULL);
 
+
+        mbedtls_ssl_set_user_data_p(&(self->ssl), self);
+        
         if (configuration->useSessionResumption)
         {
             if (mbedtls_ssl_conf_get_endpoint(&(configuration->conf)) == MBEDTLS_SSL_IS_CLIENT)
