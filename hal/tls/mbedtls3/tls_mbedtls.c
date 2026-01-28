@@ -1094,8 +1094,15 @@ createSecurityEvents(TLSConfiguration config, int ret, uint32_t flags, TLSSocket
 
     if (ret == MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE && socket->ssl.trusted_ca_not_found) {
         raiseSecurityEvent(config, TLS_SEC_EVT_INCIDENT,
-            TLS_EVENT_CODE_ALM_CERT_VALIDATION_FAILED, /* o meglio un tuo nuovo code */
+            TLS_EVENT_CODE_ALM_CERT_VALIDATION_FAILED,
             "Alarm: CA certificate not found", socket);
+        return;
+    }
+
+    if (ret == MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE && socket->ssl.not_matching_tls_cipher_suite) {
+        raiseSecurityEvent(config, TLS_SEC_EVT_INCIDENT,
+            TLS_EVENT_CODE_ALM_NO_CIPHER,
+            "Alarm: No matching TLS cipher suites", socket);
         return;
     }
 

@@ -1694,6 +1694,7 @@ struct mbedtls_ssl_context {
 
     int trusted_ca_not_found; /* IEC62351: set when trusted_ca_keys doesn't match server chain */
     int peer_cert_too_large; /* IEC62351: peer sent a certificate > max supported size */
+    int not_matching_tls_cipher_suite; /* IEC62351: set when client presents invalid cipher suites */
     int trusted_ca_cn_count;
     char trusted_ca_cn[IEC_TRUSTED_CA_CN_MAX][IEC_CN_MAXLEN];
 

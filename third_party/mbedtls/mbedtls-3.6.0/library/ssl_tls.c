@@ -1053,6 +1053,7 @@ static int ssl_handshake_init(mbedtls_ssl_context *ssl)
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
 
     ssl->trusted_ca_not_found = 0;
+    ssl->not_matching_tls_cipher_suite = 0;
     ssl->trusted_ca_cn_count = 0;
     ssl->peer_cert_too_large = 0;
     memset(ssl->trusted_ca_cn, 0, sizeof(ssl->trusted_ca_cn));
@@ -1576,6 +1577,7 @@ int mbedtls_ssl_session_reset_int(mbedtls_ssl_context *ssl, int partial)
     ssl->tls_version = ssl->conf->max_tls_version;
     
     ssl->trusted_ca_not_found = 0;
+    ssl->not_matching_tls_cipher_suite = 0;
     ssl->trusted_ca_cn_count = 0;
     ssl->peer_cert_too_large = 0;
     memset(ssl->trusted_ca_cn, 0, sizeof(ssl->trusted_ca_cn));
