@@ -106,6 +106,8 @@ IsoClientConnection_allocateTransmitBuffer(IsoClientConnection self);
 LIB61850_INTERNAL void
 IsoClientConnection_releaseTransmitBuffer(IsoClientConnection self);
 
+LIB61850_INTERNAL TLSConnection
+IsoClientConnection_getTLSConnection(IsoClientConnection self);
 
 #ifdef __cplusplus
 }

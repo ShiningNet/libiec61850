@@ -2116,6 +2116,13 @@ MmsConnection_setInformationReportHandler(MmsConnection self, MmsInformationRepo
     self->reportHandlerParameter = parameter;
 }
 
+LIB61850_API TLSConnection
+MmsConnection_getTLSConnection(MmsConnection self)
+{
+    
+    return IsoClientConnection_getTLSConnection(self->isoClient);
+}
+
 static void
 mmsClient_getNameListSingleRequestAsync(
         MmsConnection self,

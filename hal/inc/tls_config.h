@@ -122,6 +122,15 @@ PAL_API uint8_t*
 TLSConnection_getPeerCertificate(TLSConnection self, int* certSize);
 
 /**
+ * @brief Get the issuer CN for the peer certificate
+ * 
+ * @param self the TLS connection instance
+ * @return Isser CN of the certificate buffer 
+ */
+PAL_API char* 
+TLSConnection_getPeerCertIssuerCN(TLSConnection self);
+
+/**
  * \brief Get the TLS version used by the connection
  * 
  * \param self the TLS connection instance
@@ -286,10 +295,17 @@ PAL_API void
 TLSConfiguration_setRenegotiationTime(TLSConfiguration self, int timeInMs);
 
 /**
+ * @brief Applies the trusted ca indication extension to the current connection
+ * 
+ * @param con the client current connection
+ */
+PAL_API void 
+TLSConnection_applyTrustedCaIndication(TLSConnection con);
+/**
  * @brief Sets the trusted ca indication extension for ClientHello message
  * 
  * @param trustedCaPem the certificate will be used to get the issuer
- * @return PAL_API 
+ * @return bool 
  */
 PAL_API bool 
 TLSConfiguration_setTrustedCaIndicationFromFile(TLSConfiguration self,  const char* filename);

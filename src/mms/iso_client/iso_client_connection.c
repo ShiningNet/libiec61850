@@ -945,3 +945,12 @@ IsoClientConnection_releaseTransmitBuffer(IsoClientConnection self)
 {
     Semaphore_post(self->transmitBufferMutex);
 }
+
+LIB61850_INTERNAL TLSConnection
+IsoClientConnection_getTLSConnection(IsoClientConnection self)
+{
+    if (!self || !self->cotpConnection)
+        return NULL;
+
+    return self->cotpConnection->tlsSocket;
+}

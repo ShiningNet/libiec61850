@@ -204,6 +204,9 @@ LIB61850_API void
 MmsConnection_setInformationReportHandler(MmsConnection self, MmsInformationReportHandler handler,
         void* parameter);
 
+
+LIB61850_API TLSConnection
+MmsConnection_getTLSConnection(MmsConnection self);
 /**
  * \brief Get the ISO connection parameters for an MmsConnection instance
  *

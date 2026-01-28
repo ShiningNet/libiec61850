@@ -162,6 +162,24 @@ static int append_u16be(uint8_t* dst, size_t cap, size_t* off, uint16_t v)
     return 0;
 }
 
+void TLSConnection_applyTrustedCaIndication(TLSConnection con)
+{
+    TLSSocket s = (TLSSocket) con;
+    if (!s) return;
+
+    if (mbedtls_ssl_conf_get_endpoint(&(s->conf)) != MBEDTLS_SSL_IS_CLIENT)
+        return;
+
+    TLSConfiguration cfg = s->tlsConfig;
+    if (cfg && cfg->trustedCaKeysExt && cfg->trustedCaKeysExtLen > 0) {
+        mbedtls_ssl_conf_trusted_ca_keys_ext(&(s->conf),
+                                             cfg->trustedCaKeysExt,
+                                             cfg->trustedCaKeysExtLen);
+    } else {
+        mbedtls_ssl_conf_trusted_ca_keys_ext(&(s->conf), NULL, 0);
+    }
+}
+
 bool TLSConfiguration_setTrustedCaIndicationFromFile(TLSConfiguration self, const char* filename)
 {
     if (!self || !filename) return false;
@@ -252,6 +270,13 @@ bool TLSConfiguration_setTrustedCaIndicationFromFile(TLSConfiguration self, cons
 
     self->trustedCaKeysExt = buf;
     self->trustedCaKeysExtLen = total;
+    
+    if (mbedtls_ssl_conf_get_endpoint(&(self->conf)) == MBEDTLS_SSL_IS_CLIENT) {
+        
+        mbedtls_ssl_conf_trusted_ca_keys_ext(&(self->conf),
+                                                self->trustedCaKeysExt,
+                                                self->trustedCaKeysExtLen);
+    }
 
     mbedtls_x509_crt_free(&chain);
     return true;
@@ -310,18 +335,24 @@ static int iec_issuer_cn_matches(const mbedtls_x509_crt* crt,
         return 0;
 
     for (int i = 0; i < trusted_ca_cn_count; ++i) {
-        if (strcmp(issuer_cn, trusted_ca_cn[i]) == 0)
+        if (strcmp(issuer_cn, trusted_ca_cn[i]) == 0) {
+            //fprintf(stdout, "client requested a server certificate from the following issuer: %s\n", issuer_cn);
             return 1;
+        }
     }
     return 0;
 }
 
 static int iec_server_cert_cb(mbedtls_ssl_context* ssl)
 {
-#if !defined(MBEDTLS_X509_CRT_PARSE_C)
+    #if !defined(MBEDTLS_X509_CRT_PARSE_C)
     return 0;
-#else
+    #else
     if (ssl == NULL) return 0;
+    
+    mbedtls_ssl_set_hs_own_cert(ssl, NULL, NULL);
+
+    //fprintf(stdout, "iec_server_cert_cb called. trusted_ca_cn_count: %d\n", ssl->trusted_ca_cn_count);
 
     TLSSocket sock = (TLSSocket) mbedtls_ssl_get_user_data_p(ssl);
     if (!sock || !sock->tlsConfig) return 0;
@@ -516,13 +547,7 @@ TLSConfiguration_setupComplete(TLSConfiguration self)
 
         mbedtls_ssl_conf_cert_cb(&(self->conf), iec_server_cert_cb);
 
-        if (mbedtls_ssl_conf_get_endpoint(&(self->conf)) == MBEDTLS_SSL_IS_CLIENT) {
-            if (self->trustedCaKeysExt && self->trustedCaKeysExtLen > 0) {
-                mbedtls_ssl_conf_trusted_ca_keys_ext(&(self->conf),
-                                                    self->trustedCaKeysExt,
-                                                    self->trustedCaKeysExtLen);
-            }
-        }
+        
         self->setupComplete = true;
     }
 
@@ -578,6 +603,15 @@ TLSConfiguration_clearCipherSuiteList(TLSConfiguration self)
 {
     self->ciphersuites[0] = 0;
 }
+
+static void crk_mbedTLS_debug(void *ctx, int level,
+                     const char *file, int line,
+                     const char *str)
+{
+    (void) ctx;
+    fprintf(stderr, "[mbedTLS][%d] %s:%d: %s", level, file, line, str);
+}
+
 
 TLSConfiguration
 TLSConfiguration_create()
@@ -687,6 +721,11 @@ TLSConfiguration_create()
 
         self->trustedCaKeysExt = NULL;
 	    self->trustedCaKeysExtLen = 0;
+
+        // #if defined(MBEDTLS_DEBUG_C)
+        // mbedtls_ssl_conf_dbg(&self->conf, crk_mbedTLS_debug, stdout);
+        // mbedtls_debug_set_threshold(3);
+        // #endif
     }
 
     return self;
@@ -1443,6 +1482,26 @@ TLSSocket_getPeerCertificate(TLSSocket self, int* certSize)
         *certSize = self->peerCertLength;
 
     return self->peerCert;
+}
+
+char* TLSConnection_getPeerCertIssuerCN(TLSConnection self)
+{
+    TLSSocket s = (TLSSocket) self;
+    if (!s) return NULL;
+
+    const mbedtls_x509_crt* peer = mbedtls_ssl_get_peer_cert(&s->ssl);
+    if (!peer) return NULL;
+
+    char cn[128] = {0};
+    if (get_cn_from_x509_name(&peer->issuer, cn, sizeof(cn)) != 0)
+        return NULL;
+
+    size_t n = strlen(cn);
+    char* out = (char*) GLOBAL_CALLOC(1, n + 1);
+    if (!out) return NULL;
+
+    memcpy(out, cn, n);
+    return out;
 }
 
 bool
