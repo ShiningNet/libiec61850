@@ -96,6 +96,7 @@ typedef enum {
 #define TLS_EVENT_CODE_WRN_CERT_NOT_YET_VALID 18
 #define TLS_EVENT_CODE_WRN_CRL_EXPIRED 19
 #define TLS_EVENT_CODE_WRN_CRL_NOT_YET_VALID 20
+#define TLS_EVENT_CODE_ALM_INVALID_SIG_ALG 21
 
 typedef struct sTLSConnection* TLSConnection;
 

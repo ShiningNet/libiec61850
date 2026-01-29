@@ -46,6 +46,8 @@
     } while (0)
 #endif
 
+#define IEC_RSA_LEGACY_KEY_LENGTH 2048
+
 static int psaInitCounter = 0;
 
 typedef struct sTLSOwnIdentity
@@ -453,41 +455,40 @@ verifyCertificate(void* parameter, mbedtls_x509_crt* crt, int certificate_depth,
             }
         }
 
-        if (self->tlsConfig->timeValidation == false)
+        if (*flags & MBEDTLS_X509_BADCRL_EXPIRED)
         {
-            if (*flags & MBEDTLS_X509_BADCERT_EXPIRED)
-            {
-                *flags = *flags - MBEDTLS_X509_BADCERT_EXPIRED;
+            *flags = *flags - MBEDTLS_X509_BADCRL_EXPIRED;
 
-                raiseSecurityEvent(self->tlsConfig, TLS_SEC_EVT_INCIDENT, TLS_EVENT_CODE_WRN_CERT_EXPIRED,
-                                   "Alarm: expired certificate", self);
-                return 1;
-            }
-
-            if (*flags & MBEDTLS_X509_BADCRL_EXPIRED)
-            {
-                *flags = *flags - MBEDTLS_X509_BADCRL_EXPIRED;
-
-                raiseSecurityEvent(self->tlsConfig, TLS_SEC_EVT_WARNING, TLS_EVENT_CODE_WRN_CRL_EXPIRED,
-                                   "Warning: CRL expired", self);
-            }
-
-            if (*flags & MBEDTLS_X509_BADCERT_FUTURE)
-            {
-                *flags = *flags - MBEDTLS_X509_BADCERT_FUTURE;
-
-                raiseSecurityEvent(self->tlsConfig, TLS_SEC_EVT_WARNING, TLS_EVENT_CODE_WRN_CERT_NOT_YET_VALID,
-                                   "Warning: certificate validation: using certificate with validity in future", self);
-            }
-
-            if (*flags & MBEDTLS_X509_BADCRL_FUTURE)
-            {
-                *flags = *flags - MBEDTLS_X509_BADCRL_FUTURE;
-
-                raiseSecurityEvent(self->tlsConfig, TLS_SEC_EVT_WARNING, TLS_EVENT_CODE_WRN_CRL_NOT_YET_VALID,
-                                   "Warning: certificate validation: using CRL with validity in future", self);
-            }
+            raiseSecurityEvent(self->tlsConfig, TLS_SEC_EVT_WARNING, TLS_EVENT_CODE_WRN_CRL_EXPIRED,
+                                "Warning: CRL expired", self);
         }
+
+        
+        mbedtls_pk_type_t pk_type = mbedtls_pk_get_type(&crt->pk);
+        if (pk_type == MBEDTLS_PK_RSA) {
+            int bits = mbedtls_pk_get_bitlen(&crt->pk);
+            if (bits == IEC_RSA_LEGACY_KEY_LENGTH) {
+                raiseSecurityEvent(self->tlsConfig, TLS_SEC_EVT_WARNING, -1,
+                                "Warning: minimum key length", self);
+            }
+            
+        }
+
+        // if (*flags & MBEDTLS_X509_BADCERT_FUTURE)
+        // {
+        //     *flags = *flags - MBEDTLS_X509_BADCERT_FUTURE;
+
+        //     raiseSecurityEvent(self->tlsConfig, TLS_SEC_EVT_WARNING, TLS_EVENT_CODE_WRN_CERT_NOT_YET_VALID,
+        //                         "Warning: certificate validation: using certificate with validity in future", self);
+        // }
+
+        // if (*flags & MBEDTLS_X509_BADCRL_FUTURE)
+        // {
+        //     *flags = *flags - MBEDTLS_X509_BADCRL_FUTURE;
+
+        //     raiseSecurityEvent(self->tlsConfig, TLS_SEC_EVT_WARNING, TLS_EVENT_CODE_WRN_CRL_NOT_YET_VALID,
+        //                         "Warning: certificate validation: using CRL with validity in future", self);
+        // }
 
         if (self->storePeerCert)
         {
@@ -1235,9 +1236,15 @@ createSecurityEvents(TLSConfiguration config, int ret, uint32_t flags, TLSSocket
             raiseSecurityEvent(config, TLS_SEC_EVT_INCIDENT, TLS_EVENT_CODE_ALM_CERT_NOT_CONFIGURED,
                                "Alarm: Insufficient key length", socket);
         }
-
-        raiseSecurityEvent(config, TLS_SEC_EVT_INCIDENT, TLS_EVENT_CODE_ALM_CERT_VALIDATION_FAILED,
-                           "Alarm: Certificate verification failed", socket);
+        else if (flags & MBEDTLS_X509_BADCERT_BAD_MD) {
+            raiseSecurityEvent(config, TLS_SEC_EVT_INCIDENT, TLS_EVENT_CODE_ALM_INVALID_SIG_ALG,
+                               "Alarm: Algorithm not supported", socket);
+        }
+        else
+        {
+            raiseSecurityEvent(config, TLS_SEC_EVT_INCIDENT, TLS_EVENT_CODE_ALM_CERT_VALIDATION_FAILED,
+                "Alarm: Certificate verification failed", socket);
+        }
     }
     break;
 
