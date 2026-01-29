@@ -1211,7 +1211,13 @@ createSecurityEvents(TLSConfiguration config, int ret, uint32_t flags, TLSSocket
         break;
 
     case MBEDTLS_ERR_X509_CERT_VERIFY_FAILED: {
-        if (flags & MBEDTLS_X509_BADCERT_EXPIRED)
+        //prima valuto i miei flags custom
+        if (flags & MBEDTLS_X509_BADCERT_BAD_SIGNATURE) {
+            raiseSecurityEvent(config, TLS_SEC_EVT_INCIDENT, TLS_EVENT_CODE_ALM_INVALID_SIGNATURE,
+                "Alarm: certificate validation: certificate signature could not be validated", socket);
+        
+        }
+        else if (flags & MBEDTLS_X509_BADCERT_EXPIRED)
         {
             raiseSecurityEvent(config, TLS_SEC_EVT_INCIDENT, TLS_EVENT_CODE_ALM_CERT_EXPIRED,
                                "Alarm: expired certificate", socket);

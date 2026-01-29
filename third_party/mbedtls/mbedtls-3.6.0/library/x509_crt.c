@@ -2349,6 +2349,53 @@ check_signature:
 
     return 0;
 }
+static int x509_crt_find_parent_in_no_sig_check(
+    mbedtls_x509_crt *child,
+    mbedtls_x509_crt *candidates,
+    mbedtls_x509_crt **r_parent,
+    int top,
+    unsigned path_cnt,
+    unsigned self_cnt,
+    const mbedtls_x509_time *now)
+{
+    mbedtls_x509_crt *parent, *fallback_parent = NULL;
+
+    *r_parent = NULL;
+
+    for (parent = candidates; parent != NULL; parent = parent->next) {
+
+        /* Basic parenting skills (name, CA bit, key usage) */
+        if (x509_crt_check_parent(child, parent, top) != 0) {
+            continue;
+        }
+
+        /* +1 because stored max_pathlen is 1 higher than the actual value */
+        if (parent->max_pathlen > 0 &&
+            (size_t) parent->max_pathlen < 1 + path_cnt - self_cnt) {
+            continue;
+        }
+
+#if defined(MBEDTLS_HAVE_TIME_DATE)
+        /* Optional time check: prefer a time-valid parent, but keep a fallback */
+        if (mbedtls_x509_time_cmp(&parent->valid_to, now) < 0 ||    /* past */
+            mbedtls_x509_time_cmp(&parent->valid_from, now) > 0) {  /* future */
+            if (fallback_parent == NULL) {
+                fallback_parent = parent;
+            }
+            continue;
+        }
+#else
+        ((void) now);
+#endif
+
+        *r_parent = parent;
+        return 0;
+    }
+
+    /* If only time-invalid candidates exist, return first such */
+    *r_parent = fallback_parent;
+    return 0;
+}
 
 /*
  * Find a parent in trusted CAs or the provided chain, or return NULL.
@@ -2638,7 +2685,34 @@ find_parent:
 
         /* No parent? We're done here */
         if (parent == NULL) {
-            *flags |= MBEDTLS_X509_BADCERT_NOT_TRUSTED;
+
+            /* If algorithm already rejected by profile, keep original semantics:
+            * do not reclassify as "bad signature". */
+            if ((*flags & (MBEDTLS_X509_BADCERT_BAD_MD | MBEDTLS_X509_BADCERT_BAD_PK)) != 0) {
+                *flags |= MBEDTLS_X509_BADCERT_NOT_TRUSTED;
+                return 0;
+            }
+
+            /* Try to detect "bad signature" vs "not trusted":
+            * If a parent exists in the trusted store by name/constraints, but the
+            * signature check prevented selection, classify as BAD_SIGNATURE. */
+            {
+                mbedtls_x509_crt *p2 = NULL;
+
+                /* We are in the trusted-root search stage here (top = 1) */
+                (void) x509_crt_find_parent_in_no_sig_check(child, cur_trust_ca, &p2,
+                                                            1 /* top */,
+                                                            ver_chain->len - 1,
+                                                            self_cnt,
+                                                            &now);
+
+                if (p2 != NULL) {
+                    *flags |= MBEDTLS_X509_BADCERT_BAD_SIGNATURE;
+                } else {
+                    *flags |= MBEDTLS_X509_BADCERT_NOT_TRUSTED;
+                }
+            }
+
             return 0;
         }
 
@@ -2661,6 +2735,7 @@ find_parent:
         /* signature was checked while searching parent */
         if (!signature_is_good) {
             *flags |= MBEDTLS_X509_BADCERT_NOT_TRUSTED;
+            *flags |= MBEDTLS_X509_BADCERT_BAD_SIGNATURE;
         }
 
         /* check size of signing key */

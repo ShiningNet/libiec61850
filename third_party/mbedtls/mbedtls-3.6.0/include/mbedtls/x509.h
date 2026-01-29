@@ -109,6 +109,9 @@
 #define MBEDTLS_X509_BADCRL_BAD_PK           0x040000  /**< The CRL is signed with an unacceptable PK alg (eg RSA vs ECDSA). */
 #define MBEDTLS_X509_BADCRL_BAD_KEY          0x080000  /**< The CRL is signed with an unacceptable key (eg bad curve, RSA too short). */
 
+//CRK FLAGS
+#define MBEDTLS_X509_BADCERT_BAD_SIGNATURE 0x10000000 /**< The certificate is signed but the signature is invalid */
+
 /** \} name X509 Verify codes */
 /** \} addtogroup x509_module */
 
