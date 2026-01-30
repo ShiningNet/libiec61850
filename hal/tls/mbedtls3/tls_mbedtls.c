@@ -47,7 +47,7 @@
 #endif
 
 #define IEC_RSA_LEGACY_KEY_LENGTH 2048
-
+#define IEC_TLS_RENEGO_WATCHDOG_MS 2000
 static int psaInitCounter = 0;
 
 typedef struct sTLSOwnIdentity
@@ -125,6 +125,9 @@ struct sTLSSocket
 
     /* time of last session renegotiation (used to calculate next renegotiation time) */
     uint64_t lastRenegotiationTime;
+    bool     renegotiation_in_progress;
+    uint64_t renegotiation_deadline_ms;
+    bool     close_requested;
 
     /* time of the last CRL update */
     uint64_t crlUpdated;
@@ -1481,6 +1484,10 @@ TLSSocket_create(Socket socket, TLSConfiguration configuration, bool storeClient
 
         self->lastRenegotiationTime = Hal_getTimeInMs();
 
+        self->renegotiation_in_progress = false;
+        self->renegotiation_deadline_ms = 0;
+        self->close_requested = false;
+
         /* create event that TLS session is established */
         {
             char msg[256];
@@ -1567,6 +1574,80 @@ checkForCRLUpdate(TLSSocket self)
 
     /* IEC TS 62351-100-3 Conformance test 6.2.6 requires that upon CRL update a TLS renegotiation should occur */
     self->lastRenegotiationTime = 0;
+    self->renegotiation_in_progress = false;
+    self->renegotiation_deadline_ms = 0;
+}
+
+bool 
+TLSSocket_watchdogTick(TLSSocket self)
+{
+    if (!self->renegotiation_in_progress)
+        return true;
+
+    uint64_t now = Hal_getTimeInMs();
+    if (self->renegotiation_deadline_ms != 0 && now > self->renegotiation_deadline_ms) {
+
+        raiseSecurityEvent(self->tlsConfig, TLS_SEC_EVT_INCIDENT,
+                           TLS_EVENT_CODE_ALM_RENEGO_INTERVAL_EXPIRED,
+                           "Alarm: session renegotiation interval expired", self);
+
+        (void) mbedtls_ssl_close_notify(&self->ssl);
+        TLSSocket_close(self);
+
+        self->renegotiation_in_progress = false;
+        self->renegotiation_deadline_ms = 0;
+        self->close_requested = true; /* opzionale, se ti serve */
+        return false;
+    }
+
+    return true;
+}
+
+PAL_API bool
+TLSSocket_closeRequested(TLSSocket self)
+{
+    return self->close_requested;
+}
+
+static void
+TLSSocket_updateRenegoWatchdog(TLSSocket self)
+{
+#if defined(MBEDTLS_SSL_RENEGOTIATION)
+    if (!self || !self->renegotiation_in_progress)
+        return;
+
+    uint64_t now = Hal_getTimeInMs();
+
+    /* 1) Detect completion (mbedTLS updates renego_status internally) */
+    if (self->ssl.private_renego_status != 3) {
+        self->renegotiation_in_progress = false;
+        self->renegotiation_deadline_ms = 0;
+        self->lastRenegotiationTime = now;
+        DEBUG_PRINT("TLS", "renegotiation completed\n");
+        return;
+    }
+
+    /* 2) Watchdog expiry */
+    if (self->renegotiation_deadline_ms != 0 && now > self->renegotiation_deadline_ms) {
+
+        raiseSecurityEvent(self->tlsConfig, TLS_SEC_EVT_INCIDENT,
+#if defined(TLS_EVENT_CODE_ALM_RENEGO_INTERVAL_EXPIRED)
+                           TLS_EVENT_CODE_ALM_RENEGO_INTERVAL_EXPIRED,
+#else
+                           TLS_EVENT_CODE_ALM_HANDSHAKE_FAILED_UNKNOWN_REASON,
+#endif
+                           "Alarm: session renegotiation interval expired", self);
+
+        /* best effort close_notify; caller will close the TCP socket */
+        (void) mbedtls_ssl_close_notify(&self->ssl);
+
+        self->close_requested = true;
+        self->renegotiation_in_progress = false;
+        self->renegotiation_deadline_ms = 0;
+    }
+#else
+    (void) self;
+#endif
 }
 
 /* true = renegotiation is not needed or it is successfull, false = Failed */
@@ -1577,6 +1658,17 @@ startRenegotiationIfRequired(TLSSocket self)
         return true;
 
     if (self->lastRenegotiationTime == UINT64_MAX)
+        return true;
+
+    if (self->close_requested)
+        return false;
+
+    /* If a renegotiation is already pending, just maintain the watchdog */
+    TLSSocket_updateRenegoWatchdog(self);
+    if (self->close_requested)
+        return false;
+
+    if (self->renegotiation_in_progress)
         return true;
 
     if (TLSConnection_getTLSVersion((TLSConnection)(self)) == TLS_VERSION_TLS_1_3)
@@ -1592,16 +1684,22 @@ startRenegotiationIfRequired(TLSSocket self)
     raiseSecurityEvent(self->tlsConfig, TLS_SEC_EVT_INFO, TLS_EVENT_CODE_INF_SESSION_RENEGOTIATION,
                        "Info: session renegotiation started", self);
 
-    if (TLSSocket_performHandshake(self) == false)
+    int ret = mbedtls_ssl_renegotiate(&(self->ssl));
+
+    /* renegotiate() sends HelloRequest and marks renego as pending.
+       Completion will be detected later in TLSSocket_updateRenegoWatchdog(). */
+    if (ret == 0 ||
+        ret == MBEDTLS_ERR_SSL_WANT_READ ||
+        ret == MBEDTLS_ERR_SSL_WANT_WRITE)
     {
-        DEBUG_PRINT("TLS", "renegotiation failed\n");
-        return false;
+        self->renegotiation_in_progress = true;
+        self->renegotiation_deadline_ms = Hal_getTimeInMs() + IEC_TLS_RENEGO_WATCHDOG_MS;
+        DEBUG_PRINT("TLS", "started renegotiation\n");
+        return true;
     }
 
-    DEBUG_PRINT("TLS", "started renegotiation\n");
-    self->lastRenegotiationTime = Hal_getTimeInMs();
-
-    return true;
+    DEBUG_PRINT("TLS", "renegotiation failed - mbedtls_ssl_renegotiate returned -0x%x\n", -ret);
+    return false;
 }
 
 int
@@ -1609,11 +1707,18 @@ TLSSocket_read(TLSSocket self, uint8_t* buf, int size)
 {
     checkForCRLUpdate(self);
 
+    if (self->close_requested)
+        return -1;
+
     if (startRenegotiationIfRequired(self) == false)
     {
         return -1;
     }
-
+    
+    TLSSocket_updateRenegoWatchdog(self);
+    if (self->close_requested)
+        return -1;
+    
     int ret = mbedtls_ssl_read(&(self->ssl), buf, size);
 
     if ((ret == MBEDTLS_ERR_SSL_WANT_READ) || (ret == MBEDTLS_ERR_SSL_WANT_WRITE))
@@ -1654,10 +1759,17 @@ TLSSocket_write(TLSSocket self, uint8_t* buf, int size)
 
     checkForCRLUpdate(self);
 
+    if (self->close_requested)
+        return -1;
+
     if (startRenegotiationIfRequired(self) == false)
     {
         return -1;
     }
+
+    TLSSocket_updateRenegoWatchdog(self);
+    if (self->close_requested)
+        return -1;
 
     while (len < size)
     {

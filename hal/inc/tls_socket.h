@@ -68,6 +68,12 @@ TLSSocket_create(Socket socket, TLSConfiguration configuration, bool storeClient
 PAL_API bool
 TLSSocket_performHandshake(TLSSocket self);
 
+PAL_API bool
+TLSSocket_watchdogTick(TLSSocket self);
+
+PAL_API bool
+TLSSocket_closeRequested(TLSSocket self);
+
 /**
  * \brief Access the certificate used by the peer
  *

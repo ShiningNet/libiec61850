@@ -160,6 +160,16 @@ IsoConnection_removeFromHandleSet(const IsoConnection self, HandleSet handles)
 void
 IsoConnection_callTickHandler(IsoConnection self)
 {
+    if (self->tlsSocket) {
+        TLSSocket_watchdogTick(self->tlsSocket);
+        if (TLSSocket_closeRequested(self->tlsSocket)) {
+
+            IsoConnection_destroy(self);
+            self->state = ISO_CON_STATE_STOPPED;
+            return;
+        }
+    }
+
     CotpConnection_flushBuffer(self->cotpConnection);
 
     if (self->tickHandler) {
