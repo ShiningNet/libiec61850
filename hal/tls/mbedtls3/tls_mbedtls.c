@@ -1696,12 +1696,10 @@ TLSSocket_watchdogTick(TLSSocket self)
                             TLS_EVENT_CODE_ALM_RENEGO_INTERVAL_EXPIRED,
                             "Alarm: session renegotiation interval expired", self);
 
-            (void) mbedtls_ssl_close_notify(&self->ssl);
-            TLSSocket_close(self);
-
             self->renegotiation_in_progress = false;
             self->renegotiation_deadline_ms = 0;
-            self->close_requested = true; /* opzionale, se ti serve */
+            self->close_requested = true;
+
             return false;
         }
     }

@@ -99,8 +99,11 @@ finalizeIsoConnection(IsoConnection self)
         printf("ISO_SERVER: finalizeIsoConnection (%p)--> close transport connection\n", self);
 
 #if (CONFIG_MMS_SUPPORT_TLS == 1)
-    if (self->tlsSocket)
+    if (self->tlsSocket) {
+
         TLSSocket_close(self->tlsSocket);
+        self->tlsSocket = NULL;
+    }
 #endif
 
 #if (CONFIG_MMS_THREADLESS_STACK != 1)
@@ -163,9 +166,7 @@ IsoConnection_callTickHandler(IsoConnection self)
     if (self->tlsSocket) {
         TLSSocket_watchdogTick(self->tlsSocket);
         if (TLSSocket_closeRequested(self->tlsSocket)) {
-
-            IsoConnection_destroy(self);
-            self->state = ISO_CON_STATE_STOPPED;
+            IsoConnection_close(self);
             return;
         }
     }
@@ -612,8 +613,10 @@ IsoConnection_destroy(IsoConnection self)
         Thread_destroy(self->thread);
 #endif
 
-    if (self->socket != NULL)
+    if (self->socket != NULL) {
         Socket_destroy(self->socket);
+        self->socket = NULL;
+    }
 
 #if (CONFIG_MMS_SINGLE_THREADED != 1) || (CONFIG_MMS_THREADLESS_STACK == 1)
     if (self->handleSet)
