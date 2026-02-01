@@ -1179,8 +1179,15 @@ createSecurityEvents(TLSConfiguration config, int ret, uint32_t flags, TLSSocket
         break;
 
     case MBEDTLS_ERR_SSL_BAD_PROTOCOL_VERSION:
-        raiseSecurityEvent(config, TLS_SEC_EVT_INCIDENT, TLS_EVENT_CODE_ALM_HANDSHAKE_FAILED_UNKNOWN_REASON,
+        if (socket->renegotiation_in_progress) {
+
+            raiseSecurityEvent(config, TLS_SEC_EVT_INCIDENT, TLS_EVENT_CODE_ALM_HANDSHAKE_FAILED_UNKNOWN_REASON,
+                           "Alarm: TLS version change detected", socket);
+        } else {
+            raiseSecurityEvent(config, TLS_SEC_EVT_INCIDENT, TLS_EVENT_CODE_ALM_HANDSHAKE_FAILED_UNKNOWN_REASON,
                            "Alarm: Bad protocol version", socket);
+        }
+        
         break;
 
     case MBEDTLS_ERR_SSL_BAD_CERTIFICATE:
@@ -1578,31 +1585,6 @@ checkForCRLUpdate(TLSSocket self)
     self->renegotiation_deadline_ms = 0;
 }
 
-bool 
-TLSSocket_watchdogTick(TLSSocket self)
-{
-    if (!self->renegotiation_in_progress)
-        return true;
-
-    uint64_t now = Hal_getTimeInMs();
-    if (self->renegotiation_deadline_ms != 0 && now > self->renegotiation_deadline_ms) {
-
-        raiseSecurityEvent(self->tlsConfig, TLS_SEC_EVT_INCIDENT,
-                           TLS_EVENT_CODE_ALM_RENEGO_INTERVAL_EXPIRED,
-                           "Alarm: session renegotiation interval expired", self);
-
-        (void) mbedtls_ssl_close_notify(&self->ssl);
-        TLSSocket_close(self);
-
-        self->renegotiation_in_progress = false;
-        self->renegotiation_deadline_ms = 0;
-        self->close_requested = true; /* opzionale, se ti serve */
-        return false;
-    }
-
-    return true;
-}
-
 PAL_API bool
 TLSSocket_closeRequested(TLSSocket self)
 {
@@ -1663,10 +1645,10 @@ startRenegotiationIfRequired(TLSSocket self)
     if (self->close_requested)
         return false;
 
-    /* If a renegotiation is already pending, just maintain the watchdog */
-    TLSSocket_updateRenegoWatchdog(self);
-    if (self->close_requested)
-        return false;
+    // /* If a renegotiation is already pending, just maintain the watchdog */
+    // TLSSocket_updateRenegoWatchdog(self);
+    // if (self->close_requested)
+    //     return false;
 
     if (self->renegotiation_in_progress)
         return true;
@@ -1700,6 +1682,31 @@ startRenegotiationIfRequired(TLSSocket self)
 
     DEBUG_PRINT("TLS", "renegotiation failed - mbedtls_ssl_renegotiate returned -0x%x\n", -ret);
     return false;
+}
+
+bool 
+TLSSocket_watchdogTick(TLSSocket self)
+{
+    if (self->renegotiation_in_progress)
+    {
+        uint64_t now = Hal_getTimeInMs();
+        if (self->renegotiation_deadline_ms != 0 && now > self->renegotiation_deadline_ms) {
+
+            raiseSecurityEvent(self->tlsConfig, TLS_SEC_EVT_INCIDENT,
+                            TLS_EVENT_CODE_ALM_RENEGO_INTERVAL_EXPIRED,
+                            "Alarm: session renegotiation interval expired", self);
+
+            (void) mbedtls_ssl_close_notify(&self->ssl);
+            TLSSocket_close(self);
+
+            self->renegotiation_in_progress = false;
+            self->renegotiation_deadline_ms = 0;
+            self->close_requested = true; /* opzionale, se ti serve */
+            return false;
+        }
+    }
+
+    return startRenegotiationIfRequired(self);;
 }
 
 int
