@@ -692,8 +692,7 @@ TLSConfiguration_create()
             self->ciphersuites[cipherIndex++] = MBEDTLS_TLS_RSA_WITH_AES_128_CBC_SHA256;
             /* self->ciphersuites[cipherIndex++] = MBEDTLS_TLS_DH_RSA_WITH_AES_128_GCM_SHA256; */ /* weak - not
                                                                                                      supported? */
-            self->ciphersuites[cipherIndex++] = MBEDTLS_TLS_DHE_RSA_WITH_AES_128_GCM_SHA256;
-            self->ciphersuites[cipherIndex++] = MBEDTLS_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256;
+            //self->ciphersuites[cipherIndex++] = MBEDTLS_TLS_DHE_RSA_WITH_AES_128_GCM_SHA256; //da escludere IEC 62351-3 2022
 
             /* recommended cipher suites by IEC 62351-4:2018 */
 
@@ -702,10 +701,9 @@ TLSConfiguration_create()
             /* self->ciphersuites[cipherIndex++] = MBEDTLS_TLS_DH_RSA_WITH_AES_256_GCM_SHA384; */ /* not supported?*/
             self->ciphersuites[cipherIndex++] = MBEDTLS_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256;
             self->ciphersuites[cipherIndex++] = MBEDTLS_TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384;
-            self->ciphersuites[cipherIndex++] = MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384;
+            self->ciphersuites[cipherIndex++] = MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256;
 
             /* additional ciphersuites */
-            self->ciphersuites[cipherIndex++] = MBEDTLS_TLS_RSA_WITH_NULL_SHA256;
             self->ciphersuites[cipherIndex++] = MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384;
 
             /* TLS 1.3 cipher suites */
