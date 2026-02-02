@@ -3104,6 +3104,16 @@ uint32_t mbedtls_ssl_get_verify_result(const mbedtls_ssl_context *ssl)
     return 0xFFFFFFFF;
 }
 
+uint32_t mbedtls_ssl_get_session_negotiate_verify_result(const mbedtls_ssl_context *ssl)
+{
+
+    if (ssl->session_negotiate != NULL) {
+        return ssl->session_negotiate->verify_result;
+    }
+
+    return 0xFFFFFFFF;
+}
+
 int mbedtls_ssl_get_ciphersuite_id_from_ssl(const mbedtls_ssl_context *ssl)
 {
     if (ssl == NULL || ssl->session == NULL) {

@@ -4713,6 +4713,7 @@ size_t mbedtls_ssl_get_bytes_avail(const mbedtls_ssl_context *ssl);
  *                 and \c MBEDTLS_X509_BADCRL_XXX failure flags; see x509.h.
  */
 uint32_t mbedtls_ssl_get_verify_result(const mbedtls_ssl_context *ssl);
+uint32_t mbedtls_ssl_get_session_negotiate_verify_result(const mbedtls_ssl_context *ssl);
 
 /**
  * \brief          Return the id of the current ciphersuite

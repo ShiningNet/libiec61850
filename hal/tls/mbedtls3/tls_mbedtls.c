@@ -1240,7 +1240,7 @@ createSecurityEvents(TLSConfiguration config, int ret, uint32_t flags, TLSSocket
         else if (flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED)
         {
             raiseSecurityEvent(config, TLS_SEC_EVT_INCIDENT, TLS_EVENT_CODE_ALM_CERT_NOT_TRUSTED,
-                               "Alarm: Certificate validation: CA certificate not available", socket);
+                               "Alarm: certificate validation: CA certificate not available", socket);
         }
         else if (flags & MBEDTLS_X509_BADCERT_OTHER)
         {
@@ -1747,6 +1747,11 @@ TLSSocket_read(TLSSocket self, uint8_t* buf, int size)
             {
                 uint32_t flags = mbedtls_ssl_get_verify_result(&(self->ssl));
 
+                // Se mbedtls dice che va tutto bene (0) ma la read è fallita per verifica certificato,
+                // significa che l'errore è nella session_negotiate (renegotiation).
+                if (flags == 0 && ret == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED) {
+                    flags = mbedtls_ssl_get_session_negotiate_verify_result(&(self->ssl));
+                }
                 createSecurityEvents(self->tlsConfig, ret, flags, self);
             }
 
