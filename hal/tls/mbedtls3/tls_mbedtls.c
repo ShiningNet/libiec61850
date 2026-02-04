@@ -418,6 +418,13 @@ verifyCertificate(void* parameter, mbedtls_x509_crt* crt, int certificate_depth,
 
     if (certificate_depth == 0)
     {
+
+        if (FileSystem_getFileInfo("certs/crl_not_accessible", NULL, NULL))
+        {
+            raiseSecurityEvent(self->tlsConfig, TLS_SEC_EVT_WARNING, TLS_EVENT_CODE_WRN_CRL_NOT_ACCESSIBLE,
+                                "Warning: CRL not accessible", self);
+        }
+
         if (self->tlsConfig->allowOnlyKnownCertificates)
         {
             DEBUG_PRINT("TLS", "Check against list of allowed certs\n");
@@ -1094,7 +1101,7 @@ createSecurityEvents(TLSConfiguration config, int ret, uint32_t flags, TLSSocket
 {
     if (config->eventHandler == NULL)
         return;
-
+    
     if (ret == MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE && socket->ssl.trusted_ca_not_found) {
         raiseSecurityEvent(config, TLS_SEC_EVT_INCIDENT,
             TLS_EVENT_CODE_ALM_CERT_VALIDATION_FAILED,
