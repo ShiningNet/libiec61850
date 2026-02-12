@@ -1190,7 +1190,7 @@ createSecurityEvents(TLSConfiguration config, int ret, uint32_t flags, TLSSocket
                            "Alarm: TLS version change detected", socket);
         } else {
             raiseSecurityEvent(config, TLS_SEC_EVT_INCIDENT, TLS_EVENT_CODE_ALM_HANDSHAKE_FAILED_UNKNOWN_REASON,
-                           "Alarm: Bad protocol version", socket);
+                           "Alarm: Unsecure communication", socket);
         }
         
         break;
