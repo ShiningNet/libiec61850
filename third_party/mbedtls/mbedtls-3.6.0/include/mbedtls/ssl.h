@@ -1697,7 +1697,7 @@ struct mbedtls_ssl_context {
     int not_matching_tls_cipher_suite; /* IEC62351: set when client presents invalid cipher suites */
     int trusted_ca_cn_count;
     char trusted_ca_cn[IEC_TRUSTED_CA_CN_MAX][IEC_CN_MAXLEN];
-
+    char* rolename;
     /*
      * Miscellaneous
      */

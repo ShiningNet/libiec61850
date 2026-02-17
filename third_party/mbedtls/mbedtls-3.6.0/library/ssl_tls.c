@@ -1056,6 +1056,7 @@ static int ssl_handshake_init(mbedtls_ssl_context *ssl)
     ssl->not_matching_tls_cipher_suite = 0;
     ssl->trusted_ca_cn_count = 0;
     ssl->peer_cert_too_large = 0;
+    ssl->rolename = NULL;
     memset(ssl->trusted_ca_cn, 0, sizeof(ssl->trusted_ca_cn));
 
     /* Clear old handshake information if present */
@@ -1580,6 +1581,11 @@ int mbedtls_ssl_session_reset_int(mbedtls_ssl_context *ssl, int partial)
     ssl->not_matching_tls_cipher_suite = 0;
     ssl->trusted_ca_cn_count = 0;
     ssl->peer_cert_too_large = 0;
+    if (ssl->rolename) {
+        free(ssl->rolename);
+    }
+    ssl->rolename = NULL;
+
     memset(ssl->trusted_ca_cn, 0, sizeof(ssl->trusted_ca_cn));
 
     mbedtls_ssl_session_reset_msg_layer(ssl, partial);
@@ -5544,6 +5550,11 @@ void mbedtls_ssl_free(mbedtls_ssl_context *ssl)
 
     MBEDTLS_SSL_DEBUG_MSG(2, ("=> free"));
 
+    if (ssl->rolename) {
+        free(ssl->rolename);
+        ssl->rolename = NULL;
+    }
+
     if (ssl->out_buf != NULL) {
 #if defined(MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH)
         size_t out_buf_len = ssl->out_buf_len;
@@ -7746,6 +7757,219 @@ static int ssl_check_peer_crt_unchanged(mbedtls_ssl_context *ssl,
 #endif /* MBEDTLS_SSL_KEEP_PEER_CERTIFICATE */
 #endif /* MBEDTLS_SSL_RENEGOTIATION && MBEDTLS_SSL_CLI_C */
 
+
+static const unsigned char OID_IEC_62351_8_1[] = { 0x28, 0x83, 0xE7, 0x0F, 0x08, 0x01 };
+static const unsigned char OID_IEC_840_10070_8_1[] = { 0x2A, 0x86, 0x48, 0xCE, 0x56, 0x08, 0x01 };
+
+static int get_int_signed_any(const unsigned char **p,
+                              const unsigned char *end,
+                              int32_t *out)
+{
+    size_t len = 0;
+    int ret = mbedtls_asn1_get_tag(p, end, &len, MBEDTLS_ASN1_INTEGER);
+    if (ret != 0) return ret;
+
+    if (len == 0 || len > 4) return MBEDTLS_ERR_ASN1_INVALID_LENGTH;
+
+    uint32_t u = 0;
+    for (size_t i = 0; i < len; ++i) u = (u << 8) | (*p)[i];
+
+    int32_t s = (((*p)[0] & 0x80) != 0)
+        ? (int32_t)(u - (1u << (8 * len)))
+        : (int32_t)u;
+
+    *p += len;
+    *out = s;
+    return 0;
+}
+
+static int get_utf8_string(const unsigned char **p,
+                           const unsigned char *end,
+                           mbedtls_asn1_buf *out)
+{
+    size_t len = 0;
+    int ret = mbedtls_asn1_get_tag(p, end, &len, MBEDTLS_ASN1_UTF8_STRING);
+    if (ret != 0) return ret;
+    out->tag = MBEDTLS_ASN1_UTF8_STRING;
+    out->len = len;
+    out->p = (unsigned char*)*p;
+    *p += len;
+    return 0;
+}
+
+static int parse_oid_1_0_62351_8_payload(const unsigned char *p,
+                                         const unsigned char *end,
+                                         mbedtls_asn1_buf *role_out,
+                                         int32_t *v1_out,
+                                         int32_t *v2_out,
+                                         int *enum_out)
+{
+    const unsigned char *q = p;
+    size_t len = 0;
+    int ret;
+
+    // SEQUENCE 30 3B
+    ret = mbedtls_asn1_get_tag(&q, end, &len,
+                              MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE);
+    if (ret != 0) return ret;
+    const unsigned char *s0_end = q + len;
+
+    // SEQUENCE 30 39
+    ret = mbedtls_asn1_get_tag(&q, s0_end, &len,
+                              MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE);
+    if (ret != 0) return ret;
+    const unsigned char *fields_end = q + len;
+
+    // SEQUENCE 30 03 { INTEGER FE }
+    ret = mbedtls_asn1_get_tag(&q, fields_end, &len,
+                              MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE);
+    if (ret != 0) return ret;
+    const unsigned char *s_int_end = q + len;
+
+    int32_t v1 = 0;
+    ret = get_int_signed_any(&q, s_int_end, &v1);   // signed => FE = -2
+    if (ret != 0) return ret;
+
+    // UTF8String role
+    mbedtls_asn1_buf role = {0};
+    ret = get_utf8_string(&q, fields_end, &role);
+    if (ret != 0) return ret;
+
+    // INTEGER v2
+    int32_t v2 = 0;
+    ret = get_int_signed_any(&q, fields_end, &v2);
+    if (ret != 0) return ret;
+
+    // UTF8String profile
+    mbedtls_asn1_buf profile = {0};
+    ret = get_utf8_string(&q, fields_end, &profile);
+    if (ret != 0) return ret;
+
+    // ENUMERATED
+    size_t elen = 0;
+    ret = mbedtls_asn1_get_tag(&q, fields_end, &elen, MBEDTLS_ASN1_ENUMERATED);
+    if (ret != 0) return ret;
+    if (elen != 1) return MBEDTLS_ERR_ASN1_INVALID_LENGTH;
+    int e = q[0]; q += 1;
+
+    *role_out = role;
+    *v1_out = v1;
+    *v2_out = v2;
+    *enum_out = e;
+    return 0;
+}
+
+static int parse_oid_1_2_840_10070_8_payload(const unsigned char *p,
+                                             const unsigned char *end,
+                                             mbedtls_asn1_buf *role_out,
+                                             int32_t *v1_out,
+                                             int32_t *v2_out,
+                                             int *enum_out)
+{
+    const unsigned char *q = p;
+    size_t len = 0;
+    int ret;
+
+    // SEQUENCE 30 1B
+    ret = mbedtls_asn1_get_tag(&q, end, &len,
+                              MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE);
+    if (ret != 0) return ret;
+    const unsigned char *s0_end = q + len;
+
+    // SEQUENCE 30 19
+    ret = mbedtls_asn1_get_tag(&q, s0_end, &len,
+                              MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE);
+    if (ret != 0) return ret;
+    const unsigned char *fields_end = q + len;
+
+    // SEQUENCE 30 03 { INTEGER FF }
+    ret = mbedtls_asn1_get_tag(&q, fields_end, &len,
+                              MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE);
+    if (ret != 0) return ret;
+    const unsigned char *s_int_end = q + len;
+
+    int32_t v1 = 0;
+    ret = get_int_signed_any(&q, s_int_end, &v1);   // FF => -1
+    if (ret != 0) return ret;
+
+    // UTF8String role ("DSO_OPERATOR")
+    mbedtls_asn1_buf role = {0};
+    ret = get_utf8_string(&q, fields_end, &role);
+    if (ret != 0) return ret;
+
+    // INTEGER v2 (01)
+    int32_t v2 = 0;
+    ret = get_int_signed_any(&q, fields_end, &v2);
+    if (ret != 0) return ret;
+
+    // ENUMERATED (01)
+    size_t elen = 0;
+    ret = mbedtls_asn1_get_tag(&q, fields_end, &elen, MBEDTLS_ASN1_ENUMERATED);
+    if (ret != 0) return ret;
+    if (elen != 1) return MBEDTLS_ERR_ASN1_INVALID_LENGTH;
+    int e = q[0]; q += 1;
+
+    *role_out = role;
+    *v1_out = v1;
+    *v2_out = v2;
+    *enum_out = e;
+    return 0;
+}
+
+static int custom_extentions_cb(void *p_ctx,
+                     const mbedtls_x509_crt *crt,
+                     const mbedtls_asn1_buf *oid,
+                     int is_critical,
+                     const unsigned char *p,
+                     const unsigned char *end)
+{
+    (void)crt;
+
+    mbedtls_ssl_context *ssl = (mbedtls_ssl_context *)p_ctx;
+    if (!ssl) return 0;
+
+    mbedtls_asn1_buf role = {0};
+
+    // for (int i=0;i<8 && p+i<end;i++) fprintf(stderr,"%02X", p[i]);
+    //     fprintf(stderr,"\n");
+    
+    if (oid->len == sizeof(OID_IEC_62351_8_1) &&
+        memcmp(oid->p, OID_IEC_62351_8_1, sizeof(OID_IEC_62351_8_1)) == 0)
+    {
+        int32_t v1 = 0, v2 = 0;
+        int e = 0;
+
+        int ret = parse_oid_1_0_62351_8_payload(p, end, &role, &v1, &v2, &e);
+        if (ret != 0) return is_critical ? ret : 0;
+
+        
+    }
+    else if (oid->len == sizeof(OID_IEC_840_10070_8_1) &&
+        memcmp(oid->p, OID_IEC_840_10070_8_1, sizeof(OID_IEC_840_10070_8_1)) == 0){
+        
+        int32_t v1 = 0, v2 = 0;
+        int e = 0;
+        fprintf(stderr, "payload first bytes: %02X%02X%02X%02X\n", p[0],p[1],p[2],p[3]);
+        int ret = parse_oid_1_2_840_10070_8_payload(p, end, &role, &v1, &v2, &e);
+        if (ret != 0) return is_critical ? ret : 0;
+
+        
+    }
+    else {
+        return 0;
+    }
+
+    if (ssl->rolename) {
+        free(ssl->rolename);
+    }
+    ssl->rolename = malloc(role.len + 1);
+    if (!ssl->rolename) return MBEDTLS_ERR_SSL_ALLOC_FAILED;
+    memcpy(ssl->rolename, role.p, role.len);
+    ssl->rolename[role.len] = '\0';
+
+    return 0;
+}
+
 /*
  * Once the certificate message is read, parse it into a cert chain and
  * perform basic checks, but leave actual verification to the caller
@@ -7868,7 +8092,8 @@ static int ssl_parse_certificate_chain(mbedtls_ssl_context *ssl,
 
         /* Parse the next certificate in the chain. */
 #if defined(MBEDTLS_SSL_KEEP_PEER_CERTIFICATE)
-        ret = mbedtls_x509_crt_parse_der(chain, ssl->in_msg + i, n);
+        
+        ret = mbedtls_x509_crt_parse_der_with_ext_cb(chain, ssl->in_msg + i, n, 1, custom_extentions_cb, ssl);
 #else
         /* If we don't need to store the CRT chain permanently, parse
          * it in-place from the input buffer instead of making a copy. */

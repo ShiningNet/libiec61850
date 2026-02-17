@@ -1509,6 +1509,11 @@ TLSSocket_create(Socket socket, TLSConfiguration configuration, bool storeClient
             snprintf(msg, 255, "Info: Session established with cipher suite %s", cipherSuite);
 
             raiseSecurityEvent(configuration, TLS_SEC_EVT_INFO, TLS_EVENT_CODE_INF_SESSION_ESTABLISHED, msg, self);
+
+            if (self->ssl.rolename) {
+                snprintf(msg, 255, "RBAC Role Found: %s", self->ssl.rolename);
+                raiseSecurityEvent(configuration, TLS_SEC_EVT_INFO, TLS_EVENT_CODE_INF_IEC62351_8_EXT_FOUND, msg, self);
+            }
         }
     }
 
