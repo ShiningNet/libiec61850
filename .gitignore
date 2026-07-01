@@ -1,4 +1,6 @@
 build/
 /Debug/
+dotnet/**/obj/
+tools/**/obj/
 third_party/winpcap
 third_party/sqlite

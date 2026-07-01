@@ -13,6 +13,7 @@
 
 #include "hal_thread.h"
 #include "hal_time.h"
+#include "hal_filesystem.h"
 #include "lib_memory.h"
 #include "linked_list.h"
 #include "tls_socket.h"
